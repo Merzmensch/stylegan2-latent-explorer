@@ -1,5 +1,7 @@
 # StyleGAN2 Latent Explorer
 
+Read more in my [blog](https://medium.com/merzazine/stylegan2-locally-part-2-infinite-latent-space-browser-4e53432e28fd?sk=14d557b399c601402345aa5cca73e05e)
+
 **A local toolkit for exploring StyleGAN2 models trained on your own images.**  
 Navigate, browse, and export from the latent space of your GAN — running entirely on your own GPU, no cloud required.
 

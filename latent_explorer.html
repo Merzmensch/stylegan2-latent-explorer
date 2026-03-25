@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Latent Space Explorer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:      #0a0a0f;
+    --surface: #111118;
+    --panel:   #16161f;
+    --border:  #2a2a3a;
+    --accent:  #7c6eff;
+    --accent2: #ff6e9c;
+    --text:    #e8e8f0;
+    --muted:   #555566;
+    --green:   #4fffb0;
+    --r:       6px;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: 'Space Mono', monospace; font-size: 12px;
+    height: 100vh; display: grid;
+    grid-template-rows: 48px 1fr; overflow: hidden;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 20px; border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+  header h1 { font-family: 'Syne', sans-serif; font-size: 15px; font-weight: 800; }
+  header h1 span { color: var(--accent); }
+  .hstatus { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); transition: background .3s; }
+  .dot.live  { background: var(--green);   box-shadow: 0 0 8px var(--green); }
+  .dot.error { background: var(--accent2); }
+
+  .workspace { display: grid; grid-template-columns: 260px 1fr 240px; overflow: hidden; }
+  .left-panel, .right-panel {
+    background: var(--panel); display: flex;
+    flex-direction: column; overflow-y: auto;
+  }
+  .left-panel  { border-right: 1px solid var(--border); }
+  .right-panel { border-left:  1px solid var(--border); }
+  .left-panel::-webkit-scrollbar, .right-panel::-webkit-scrollbar { width: 3px; }
+  .left-panel::-webkit-scrollbar-thumb, .right-panel::-webkit-scrollbar-thumb { background: var(--border); }
+
+  .section { padding: 14px 16px; border-bottom: 1px solid var(--border); }
+  .section:last-child { border-bottom: none; }
+  .slabel { font-size: 9px; letter-spacing: .15em; color: var(--muted); text-transform: uppercase; margin-bottom: 10px; }
+
+  .btn {
+    cursor: pointer; border: none; border-radius: var(--r);
+    font-family: 'Space Mono', monospace; font-size: 11px;
+    padding: 7px 13px; transition: all .15s; white-space: nowrap;
+  }
+  .btn:disabled { opacity: .35; cursor: not-allowed; }
+  .primary   { background: var(--accent); color: #fff; }
+  .primary:not(:disabled):hover   { background: #9080ff; }
+  .secondary { background: var(--border); color: var(--text); }
+  .secondary:not(:disabled):hover { background: #3a3a50; }
+  .ghost     { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .ghost:not(:disabled):hover     { color: var(--text); border-color: var(--accent); }
+  .sm  { padding: 5px 10px; font-size: 10px; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .full { width: 100%; }
+
+  .field {
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: var(--r); color: var(--text);
+    font-family: 'Space Mono', monospace; font-size: 11px;
+    padding: 7px 10px; outline: none; width: 100%;
+  }
+  .field:focus { border-color: var(--accent); }
+  .field::placeholder { color: var(--muted); }
+
+  .slider-wrap { margin-bottom: 10px; }
+  .slider-wrap:last-child { margin-bottom: 0; }
+  .slider-head { display: flex; justify-content: space-between; margin-bottom: 5px; }
+  .slider-head label { font-size: 11px; }
+  .slider-head .v { font-size: 11px; color: var(--accent); min-width: 32px; text-align: right; }
+  input[type=range] {
+    -webkit-appearance: none; width: 100%; height: 3px;
+    background: var(--border); border-radius: 2px; outline: none; cursor: pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 14px; height: 14px;
+    border-radius: 50%; background: var(--accent);
+    border: 2px solid var(--bg); transition: transform .1s;
+  }
+  input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.3); }
+
+  .pin-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: #1a1a2a; border: 1px solid #2a2a4a;
+    border-radius: 20px; padding: 4px 10px;
+    font-size: 10px; color: var(--muted); margin-bottom: 8px;
+  }
+  .pin-badge.active { border-color: var(--accent); color: var(--accent); }
+  .pin-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+  .pin-badge.active .pin-dot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+
+  .main-view {
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    position: relative; background: var(--bg); overflow: hidden;
+  }
+  .main-view::before {
+    content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 1;
+    background: repeating-linear-gradient(to bottom,
+      transparent 0, transparent 3px, rgba(0,0,0,.07) 3px, rgba(0,0,0,.07) 4px);
+  }
+  .img-wrap { position: relative; z-index: 2; }
+  #canvas {
+    display: block; max-width: min(512px, calc(100vw - 560px));
+    max-height: calc(100vh - 180px); width: 100%; height: auto;
+    border: 1px solid var(--border); border-radius: 4px;
+    box-shadow: 0 0 60px rgba(124,110,255,.15), 0 0 120px rgba(0,0,0,.8);
+    transition: opacity .1s; background: var(--surface);
+    min-width: 256px; min-height: 256px; object-fit: contain;
+  }
+  #canvas.loading { opacity: .45; }
+  .img-overlay {
+    position: absolute; bottom: 10px; left: 10px; right: 10px;
+    display: flex; justify-content: space-between; pointer-events: none;
+  }
+  .badge { font-size: 10px; background: rgba(0,0,0,.7); padding: 3px 8px; border-radius: 3px; }
+  .walk-badge { color: var(--green); }
+  .walk-badge.off { color: var(--muted); }
+  .progress { position: absolute; bottom: 0; left: 0; height: 2px; background: var(--accent); transition: width .1s linear; z-index: 3; }
+  .center-controls {
+    position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 8px; z-index: 4; align-items: center;
+  }
+  .play-btn {
+    width: 44px; height: 44px; border-radius: 50%;
+    background: var(--accent); border: none; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all .15s; box-shadow: 0 0 20px rgba(124,110,255,.4);
+  }
+  .play-btn:hover { transform: scale(1.1); background: #9080ff; }
+  .play-btn:disabled { opacity: .35; cursor: not-allowed; transform: none; }
+
+  .placeholder {
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 14px; color: var(--muted); text-align: center; padding: 40px;
+  }
+  .placeholder svg { opacity: .25; }
+  .placeholder p { font-size: 12px; line-height: 1.7; }
+  .placeholder strong { color: var(--text); font-family: 'Syne', sans-serif; font-size: 14px; display: block; margin-bottom: 4px; }
+
+  .history-header {
+    padding: 12px 14px; border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
+  }
+  .history-header span { font-size: 9px; letter-spacing: .15em; color: var(--muted); text-transform: uppercase; }
+  .history-grid {
+    flex: 1; overflow-y: auto; padding: 8px;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 5px; align-content: start;
+  }
+  .history-grid::-webkit-scrollbar { width: 3px; }
+  .history-grid::-webkit-scrollbar-thumb { background: var(--border); }
+  .h-item {
+    position: relative; cursor: pointer;
+    border: 1px solid var(--border); border-radius: 4px;
+    overflow: hidden; aspect-ratio: 1; transition: border-color .15s;
+  }
+  .h-item:hover { border-color: var(--accent); }
+  .h-item img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .h-item .n { position: absolute; bottom: 3px; right: 4px; font-size: 9px; color: rgba(255,255,255,.5); background: rgba(0,0,0,.5); padding: 1px 4px; border-radius: 2px; }
+  .h-item .dl { position: absolute; top: 3px; right: 3px; width: 20px; height: 20px; background: rgba(0,0,0,.7); border: none; border-radius: 3px; cursor: pointer; display: none; align-items: center; justify-content: center; color: white; font-size: 11px; }
+  .h-item:hover .dl { display: flex; }
+  .empty-h { grid-column: 1/-1; text-align: center; color: var(--muted); font-size: 11px; padding: 24px 8px; line-height: 1.7; }
+
+  #toast { position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%) translateY(16px); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 7px 16px; font-size: 11px; color: var(--text); opacity: 0; transition: all .25s; z-index: 100; pointer-events: none; }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .hint { font-size: 10px; color: var(--muted); line-height: 1.6; margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Latent <span>Space</span> Explorer by Claude and Merzmensch</h1>
+  <div class="hstatus">
+    <div class="dot" id="dot"></div>
+    <span id="stxt">connecting…</span>
+    <a href="http://localhost:5000/browser" style="color:var(--muted);text-decoration:none;font-size:10px">→ Latent Browser</a>
+  </div>
+</header>
+
+<div class="workspace">
+  <div class="left-panel">
+    <div class="section">
+      <div class="slabel">Random Walk</div>
+      <div class="slider-wrap">
+        <div class="slider-head"><label>Walk Speed</label><span class="v" id="sv">0.050</span></div>
+        <input type="range" min="0.005" max="0.25" step="0.005" value="0.05"
+          oninput="cfg.step=+this.value; document.getElementById('sv').textContent=parseFloat(this.value).toFixed(3)">
+      </div>
+      <div class="slider-wrap">
+        <div class="slider-head"><label>Frame Rate (fps)</label><span class="v" id="fv">6</span></div>
+        <input type="range" min="1" max="20" step="1" value="6"
+          oninput="document.getElementById('fv').textContent=this.value; cfg.fps=+this.value">
+      </div>
+    </div>
+    <div class="section">
+      <div class="slabel">StyleGAN Controls</div>
+      <div class="slider-wrap">
+        <div class="slider-head"><label>Truncation ψ</label><span class="v" id="tv">0.70</span></div>
+        <input type="range" min="0" max="1.5" step="0.05" value="0.7"
+          oninput="document.getElementById('tv').textContent=parseFloat(this.value).toFixed(2)"
+          onchange="setTrunc(+this.value)">
+      </div>
+      <p class="hint">Low = safe/average · High = diverse/extreme</p>
+    </div>
+    <div class="section">
+      <div class="slabel">Seed Jump</div>
+      <div class="row" style="margin-bottom:6px">
+        <input class="field" type="number" id="seed" placeholder="0 – 999999" min="0" max="999999" style="flex:1">
+        <button class="btn secondary sm" onclick="goSeed()">Go</button>
+      </div>
+      <button class="btn ghost sm full" onclick="rndSeed()">⚄ Random seed</button>
+    </div>
+    <div class="section">
+      <div class="slabel">Bookmark</div>
+      <div class="pin-badge" id="pb"><span class="pin-dot"></span><span>No bookmark</span></div>
+      <div class="row">
+        <button class="btn secondary sm" style="flex:1" onclick="pinIt()">📌 Pin</button>
+        <button class="btn ghost sm" style="flex:1" id="recbtn" onclick="recallPin()" disabled>↩ Recall</button>
+      </div>
+    </div>
+<div class="section">
+  <div class="slabel">Export</div>
+  <button class="btn ghost sm full" onclick="saveCurrent()" style="margin-bottom:6px">↓ Save current frame</button>
+  <button class="btn secondary sm full" id="recbtn2" onclick="toggleRecord()">⏺ Start Recording</button>
+  <p class="hint" id="rechint" style="margin-top:6px"></p>
+</div>
+    <div class="section">
+      <div class="slabel">Keyboard Shortcuts</div>
+      <p class="hint">
+        <b style="color:var(--text)">Space</b> — play / pause<br>
+        <b style="color:var(--text)">→</b> — step once<br>
+        <b style="color:var(--text)">R</b> — random jump<br>
+        <b style="color:var(--text)">P</b> — pin current<br>
+        <b style="color:var(--text)">B</b> — recall bookmark<br>
+        <b style="color:var(--text)">S</b> — save frame
+      </p>
+    </div>
+  </div>
+
+  <div class="main-view">
+    <div class="img-wrap">
+      <div class="placeholder" id="ph">
+        <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+          <rect x="4" y="4" width="40" height="40" rx="6" stroke="currentColor" stroke-width="2"/>
+          <circle cx="24" cy="24" r="8" stroke="currentColor" stroke-width="2"/>
+          <circle cx="24" cy="24" r="2" fill="currentColor"/>
+        </svg>
+        <p><strong>Connecting…</strong>Make sure server.py is running.</p>
+      </div>
+      <img id="canvas" style="display:none" alt="Generated">
+      <div class="img-overlay">
+        <span class="badge" id="fcnt">frame 0</span>
+        <span class="badge walk-badge off" id="wind">■ paused</span>
+      </div>
+      <div class="progress" id="prog" style="width:0%"></div>
+    </div>
+    <div class="center-controls">
+      <button class="btn secondary sm" id="stepbtn" onclick="stepOnce()" disabled>›</button>
+      <button class="play-btn" id="playbtn" onclick="toggleWalk()" disabled>
+        <svg id="pico" width="18" height="18" viewBox="0 0 24 24" fill="white">
+          <polygon points="5,3 19,12 5,21"/>
+        </svg>
+      </button>
+      <button class="btn secondary sm" id="jmpbtn" onclick="rndJump()" disabled>⚄</button>
+    </div>
+  </div>
+
+  <div class="right-panel">
+    <div class="history-header">
+      <span>History</span>
+      <button class="btn ghost sm" onclick="clearHist()">Clear</button>
+    </div>
+    <div class="history-grid" id="hgrid">
+      <div class="empty-h">Generated images<br>appear here.</div>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<footer>
+  <div>
+    StyleGAN2 Latent Explorer · running on <span id="model-name">localhost:5000</span><br>
+    <span style="color:var(--muted); font-size:9px; letter-spacing:.06em">
+      Created by <a href="https://claude.ai/" style="color:var(--accent2); text-decoration:none">Claude</a> &amp; 
+      <a href="https://merzmensch.com/" style="color:var(--accent); text-decoration:none">Merzmensch</a> 
+      for the worldwide GenAI creative community
+    </span>
+  </div>
+  <div class="footer-links">
+    <a href="/ui">Walk Explorer</a>
+    <a href="/browser">Latent Browser</a>
+    <a href="/infinite">Infinite Map</a>
+  </div>
+</footer>
+
+<script>
+const API = 'http://localhost:5000';
+let walking = false, timer = null, frame = 0, walkT = 0, pinned = false;
+const cfg = { step: 0.05, fps: 6 };
+let hist = [];
+
+async function api(path, method='GET', body=null) {
+  try {
+    const r = await fetch(API + path, {
+      method, headers: {'Content-Type':'application/json'},
+      body: body ? JSON.stringify(body) : null
+    });
+    return await r.json();
+  } catch(e) { return null; }
+}
+
+function setStatus(s, msg) {
+  document.getElementById('dot').className = 'dot ' + s;
+  document.getElementById('stxt').textContent = msg;
+}
+function enable(on) {
+  ['playbtn','stepbtn','jmpbtn'].forEach(id => document.getElementById(id).disabled = !on);
+}
+function showImg(b64) {
+  const img = document.getElementById('canvas');
+  document.getElementById('ph').style.display = 'none';
+  img.style.display = 'block';
+  img.classList.add('loading');
+  const src = 'data:image/jpeg;base64,' + b64;
+  img.onload = () => { img.classList.remove('loading'); addHist(src); };
+  img.src = src;
+  frame++;
+  document.getElementById('fcnt').textContent = 'frame ' + frame;
+  document.getElementById('prog').style.width = (walkT * 100) + '%';
+}
+
+async function init() {
+  const s = await api('/status');
+  if (s && s.status === 'ok') {
+    setStatus('live', `ready · z=${s.z_dim} · ${s.resolution}px`);
+    enable(true);
+    // Vom Browser gepinnten z laden — sonst random
+    const pinned = await api('/recall', 'POST');
+    if (pinned && pinned.image) {
+      showImg(pinned.image);
+      toast('📌 Position vom Latent Browser geladen');
+    } else {
+      const r = await api('/random', 'POST');
+      if (r) showImg(r.image);
+    }
+  } else {
+    setStatus('error', 'server not reachable — is server.py running?');
+  }
+}
+
+function toggleWalk() {
+  walking = !walking;
+  const ico = document.getElementById('pico');
+  const ind = document.getElementById('wind');
+  if (walking) {
+    ico.innerHTML = '<rect x="5" y="4" width="4" height="16"/><rect x="15" y="4" width="4" height="16"/>';
+    ind.className = 'badge walk-badge'; ind.textContent = '● walking';
+    tick();
+  } else {
+    ico.innerHTML = '<polygon points="5,3 19,12 5,21"/>';
+    ind.className = 'badge walk-badge off'; ind.textContent = '■ paused';
+    clearTimeout(timer);
+  }
+}
+function tick() {
+  if (!walking) return;
+  timer = setTimeout(async () => {
+    const r = await api('/walk', 'POST', { step_size: cfg.step });
+    if (r) { walkT = (walkT + cfg.step) % 1; showImg(r.image); }
+    tick();
+  }, 1000 / cfg.fps);
+}
+async function stepOnce() {
+  if (walking) toggleWalk();
+  const r = await api('/walk', 'POST', { step_size: cfg.step });
+  if (r) { walkT = (walkT + cfg.step) % 1; showImg(r.image); }
+}
+async function rndJump() {
+  walkT = 0;
+  const r = await api('/random', 'POST');
+  if (r) showImg(r.image);
+}
+async function setTrunc(v) {
+  const r = await api('/truncation', 'POST', { value: v });
+  if (r) showImg(r.image);
+}
+async function goSeed() {
+  const s = parseInt(document.getElementById('seed').value);
+  if (isNaN(s)) { toast('Enter a seed number'); return; }
+  const r = await api('/set_seed', 'POST', { seed: s });
+  if (r) showImg(r.image);
+}
+function rndSeed() {
+  document.getElementById('seed').value = Math.floor(Math.random()*100000);
+  goSeed();
+}
+async function pinIt() {
+  await api('/pin', 'POST'); pinned = true;
+  const pb = document.getElementById('pb');
+  pb.className = 'pin-badge active';
+  pb.innerHTML = '<span class="pin-dot"></span><span>Bookmarked ✓</span>';
+  document.getElementById('recbtn').disabled = false;
+  toast('📌 Pinned!');
+}
+async function recallPin() {
+  if (!pinned) return;
+  const r = await api('/recall', 'POST');
+  if (r && r.image) { walkT = 0; showImg(r.image); toast('↩ Recalled'); }
+}
+function addHist(src) {
+  hist.unshift(src); if (hist.length > 40) hist.pop();
+  const g = document.getElementById('hgrid'); g.innerHTML = '';
+  hist.forEach((s, i) => {
+    const d = document.createElement('div'); d.className = 'h-item';
+    d.innerHTML = `<img src="${s}" loading="lazy"><span class="n">${hist.length-i}</span><button class="dl" onclick="dlImg('${s}',${hist.length-i})">↓</button>`;
+    d.querySelector('img').onclick = () => { document.getElementById('canvas').src = s; };
+    g.appendChild(d);
+  });
+}
+function clearHist() { hist = []; document.getElementById('hgrid').innerHTML = '<div class="empty-h">Cleared.</div>'; }
+function saveCurrent() {
+  const img = document.getElementById('canvas');
+  if (!img.src || img.style.display==='none') { toast('No image yet'); return; }
+  dlImg(img.src, frame);
+}
+function dlImg(src, n) {
+  const a = document.createElement('a');
+  a.href = src; a.download = `latent_${String(n).padStart(4,'0')}.png`; a.click();
+}
+let _tt;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  clearTimeout(_tt); _tt = setTimeout(() => el.classList.remove('show'), 2400);
+}
+document.addEventListener('keydown', e => {
+  if (e.target.tagName==='INPUT') return;
+  if (e.code==='Space')         { e.preventDefault(); toggleWalk(); }
+  if (e.code==='ArrowRight')    stepOnce();
+  if (e.key==='r'||e.key==='R') rndJump();
+  if (e.key==='p'||e.key==='P') pinIt();
+  if (e.key==='b'||e.key==='B') recallPin();
+  if (e.key==='s'||e.key==='S') saveCurrent();
+});
+
+let recording = false;
+let recCount = 0;
+
+async function toggleRecord() {
+  const btn = document.getElementById('recbtn2');
+  const hint = document.getElementById('rechint');
+  if (!recording) {
+    await api('/record/start', 'POST');
+    recording = true;
+    recCount = 0;
+    btn.textContent = '⏹ Stop & Save MP4';
+    btn.style.background = 'var(--accent2)';
+    hint.textContent = 'Recording… walk to capture frames.';
+  } else {
+    btn.disabled = true;
+    btn.textContent = '⏳ Saving…';
+    const r = await api('/record/stop', 'POST');
+    recording = false;
+    btn.disabled = false;
+    btn.textContent = '⏺ Start Recording';
+    btn.style.background = '';
+    if (r && r.path) {
+      hint.textContent = '✅ Saved: ' + r.path.split('\\').pop();
+      toast('✅ MP4 gespeichert!');
+    }
+  }
+}
+
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+models/*.pkl 
+output*.mp4 
+__pycache__/ 
+stylegan2-ada-pytorch/ 
+*.pyc 
+.env 

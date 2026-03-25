@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Latent Browser</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Bebas+Neue&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:       #0c0c0e;
+    --surface:  #131316;
+    --panel:    #18181d;
+    --border:   #252530;
+    --accent:   #00d4ff;
+    --accent2:  #ff4d6d;
+    --accent3:  #39ff8f;
+    --text:     #dddde8;
+    --muted:    #4a4a60;
+    --r:        4px;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    height: 100vh;
+    display: grid;
+    grid-template-rows: 44px 1fr;
+    overflow: hidden;
+    cursor: crosshair;
+  }
+
+  /* ── Header ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 18px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    z-index: 20;
+  }
+  .logo {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 20px;
+    letter-spacing: 0.1em;
+    color: var(--text);
+  }
+  .logo span { color: var(--accent); }
+  .hrow { display: flex; align-items: center; gap: 14px; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+  .dot.live  { background: var(--accent3); box-shadow: 0 0 8px var(--accent3); }
+  .dot.error { background: var(--accent2); }
+  .dot.busy  { background: var(--accent);  animation: blink 0.8s infinite; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
+  #stxt { font-size: 10px; color: var(--muted); }
+
+  /* ── Layout ── */
+  .workspace {
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    overflow: hidden;
+  }
+
+  /* ── Left: Grid + Preview overlay ── */
+  .canvas-area {
+    position: relative;
+    overflow: hidden;
+    background: var(--bg);
+  }
+
+  /* Crosshair cursor lines */
+  .crosshair-h, .crosshair-v {
+    position: absolute;
+    background: rgba(0, 212, 255, 0.25);
+    pointer-events: none;
+    z-index: 5;
+    transition: opacity 0.15s;
+    opacity: 0;
+  }
+  .crosshair-h { height: 1px; left: 0; right: 0; }
+  .crosshair-v { width: 1px;  top: 0; bottom: 0; }
+  .canvas-area:hover .crosshair-h,
+  .canvas-area:hover .crosshair-v { opacity: 1; }
+
+  /* Grid of thumbnails */
+  #grid-container {
+    width: 100%; height: 100%;
+    display: grid;
+    gap: 2px;
+    padding: 2px;
+  }
+
+  .grid-cell {
+    position: relative;
+    overflow: hidden;
+    background: var(--surface);
+    cursor: crosshair;
+  }
+  .grid-cell img {
+    width: 100%; height: 100%;
+    object-fit: cover;
+    display: block;
+    transition: opacity 0.2s;
+  }
+  .grid-cell.loading img { opacity: 0.3; }
+
+  /* Hover highlight ring */
+  .grid-cell::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border: 2px solid transparent;
+    pointer-events: none;
+    transition: border-color 0.1s;
+  }
+  .grid-cell.active::after { border-color: var(--accent); }
+
+  /* Loading overlay */
+  #loading-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(12, 12, 14, 0.92);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    z-index: 10;
+    backdrop-filter: blur(4px);
+  }
+  #loading-overlay.hidden { display: none; }
+
+  .loader-title {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 28px;
+    letter-spacing: 0.1em;
+    color: var(--accent);
+  }
+  .progress-track {
+    width: 280px;
+    height: 2px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    background: var(--accent);
+    width: 0%;
+    transition: width 0.3s;
+    box-shadow: 0 0 8px var(--accent);
+  }
+  #load-status {
+    font-size: 10px;
+    color: var(--muted);
+    text-align: center;
+    line-height: 1.6;
+  }
+
+  /* ── Right Panel ── */
+  .right-panel {
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* Preview image */
+  .preview-box {
+    flex-shrink: 0;
+    position: relative;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
+  #preview-img {
+    width: 100%;
+    aspect-ratio: 1;
+    object-fit: cover;
+    display: block;
+    transition: opacity 0.1s;
+  }
+  #preview-img.loading { opacity: 0.4; }
+
+  .preview-placeholder {
+    width: 100%;
+    aspect-ratio: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-size: 11px;
+    text-align: center;
+    line-height: 1.7;
+    padding: 20px;
+    background: var(--bg);
+  }
+
+  .preview-badge {
+    position: absolute;
+    bottom: 8px;
+    left: 8px;
+    background: rgba(0,0,0,0.8);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    padding: 4px 10px;
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .preview-badge span { color: var(--accent); }
+
+  /* Controls */
+  .controls {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0;
+  }
+  .controls::-webkit-scrollbar { width: 3px; }
+  .controls::-webkit-scrollbar-thumb { background: var(--border); }
+
+  .section {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .slabel {
+    font-size: 9px;
+    letter-spacing: 0.15em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+
+  /* Buttons */
+  .btn {
+    cursor: pointer; border: none; border-radius: var(--r);
+    font-family: 'DM Mono', monospace; font-size: 11px;
+    padding: 7px 13px; transition: all .15s; white-space: nowrap;
+  }
+  .btn:disabled { opacity: .35; cursor: not-allowed; }
+  .primary   { background: var(--accent); color: #000; font-weight: 500; }
+  .primary:not(:disabled):hover   { background: #33ddff; }
+  .secondary { background: var(--border); color: var(--text); }
+  .secondary:not(:disabled):hover { background: #333344; }
+  .ghost     { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .ghost:not(:disabled):hover     { color: var(--text); border-color: var(--accent); }
+  .success   { background: var(--accent3); color: #000; font-weight: 500; }
+  .success:not(:disabled):hover   { background: #55ffaa; }
+  .sm   { padding: 5px 10px; font-size: 10px; }
+  .full { width: 100%; }
+  .row  { display: flex; gap: 6px; }
+
+  /* Sliders */
+  .slider-wrap { margin-bottom: 10px; }
+  .slider-wrap:last-child { margin-bottom: 0; }
+  .slider-head { display: flex; justify-content: space-between; margin-bottom: 5px; }
+  .slider-head label { font-size: 11px; color: var(--text); }
+  .slider-head .v { font-size: 11px; color: var(--accent); min-width: 36px; text-align: right; }
+  input[type=range] {
+    -webkit-appearance: none; width: 100%; height: 2px;
+    background: var(--border); border-radius: 2px; outline: none; cursor: pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 13px; height: 13px;
+    border-radius: 50%; background: var(--accent);
+    border: 2px solid var(--bg); transition: transform .1s;
+  }
+  input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.3); }
+
+  /* Grid size selector */
+  .grid-size-row {
+    display: flex; gap: 5px;
+  }
+  .gs-btn {
+    flex: 1; padding: 6px; text-align: center;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: var(--r); cursor: pointer; font-family: 'DM Mono', monospace;
+    font-size: 11px; color: var(--muted); transition: all .15s;
+  }
+  .gs-btn:hover   { border-color: var(--accent); color: var(--text); }
+  .gs-btn.active  { border-color: var(--accent); color: var(--accent); background: #0d1f26; }
+
+  /* Model selector */
+  select.field {
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: var(--r); color: var(--text);
+    font-family: 'DM Mono', monospace; font-size: 11px;
+    padding: 7px 10px; outline: none; width: 100%; cursor: pointer;
+    appearance: none;
+  }
+  select.field:focus { border-color: var(--accent); }
+
+  /* Hint */
+  .hint { font-size: 10px; color: var(--muted); line-height: 1.6; margin-top: 6px; }
+
+  /* Axis labels */
+  .axis-label {
+    position: absolute;
+    font-size: 9px;
+    color: rgba(0, 212, 255, 0.4);
+    letter-spacing: 0.1em;
+    pointer-events: none;
+    z-index: 4;
+  }
+  #axis-x { bottom: 8px; right: 12px; }
+  #axis-y { top: 12px; left: 8px; writing-mode: vertical-rl; transform: rotate(180deg); }
+
+  /* Toast */
+  #toast {
+    position: fixed; bottom: 24px; left: 50%;
+    transform: translateX(-50%) translateY(16px);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--r); padding: 7px 16px;
+    font-size: 11px; color: var(--text);
+    opacity: 0; transition: all .25s; z-index: 100; pointer-events: none;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* Send to explorer button */
+  .send-btn {
+    position: absolute;
+    top: 8px; right: 8px;
+    background: rgba(0,0,0,0.8);
+    border: 1px solid var(--accent);
+    border-radius: var(--r);
+    color: var(--accent);
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    padding: 4px 10px;
+    cursor: pointer;
+    transition: all .15s;
+    z-index: 2;
+  }
+  .send-btn:hover { background: var(--accent); color: #000; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Latent <span>Browser</span> by Claude and Merzmensch</div>
+  <div class="hrow">
+    <div class="dot" id="dot"></div>
+    <span id="stxt">not connected</span>
+    <a href="/ui" style="color:var(--muted);text-decoration:none;font-size:10px">→ Walk Explorer</a>
+  </div>
+</header>
+
+<div class="workspace">
+
+  <!-- LEFT: Grid canvas -->
+  <div class="canvas-area" id="canvas-area">
+
+    <div class="crosshair-h" id="ch-h"></div>
+    <div class="crosshair-v" id="ch-v"></div>
+    <span class="axis-label" id="axis-x">PC 1 →</span>
+    <span class="axis-label" id="axis-y">PC 2 →</span>
+
+    <div id="grid-container"></div>
+
+    <!-- Loading overlay -->
+    <div id="loading-overlay">
+      <div class="loader-title">Building Latent Space</div>
+      <div class="progress-track">
+        <div class="progress-fill" id="prog-fill"></div>
+      </div>
+      <div id="load-status">Connect to a model and click<br><strong style="color:var(--text)">Build Grid</strong> to begin.</div>
+    </div>
+
+  </div>
+
+  <!-- RIGHT: Preview + Controls -->
+  <div class="right-panel">
+
+<!-- Preview -->
+<div class="preview-box">
+  <div class="preview-placeholder" id="preview-ph">
+    Move mouse over<br>the grid to explore
+  </div>
+  <img id="preview-img" style="display:none" alt="Preview">
+  <button class="send-btn" id="send-btn" style="display:none" onclick="sendToExplorer()" title="Send this z to Walk Explorer">
+    → Walk Explorer
+  </button>
+  <button class="send-btn" id="send-inf-btn" style="display:none; top:38px;" onclick="sendToInfinite()" title="Send this z to Infinite Map">
+    → Infinite Map
+  </button>
+  <div class="preview-badge" id="coord-badge" style="display:none">
+    x: <span id="bx">0.00</span> &nbsp; y: <span id="by">0.00</span>
+  </div>
+</div>
+
+    <!-- Controls -->
+    <div class="controls">
+
+      <!-- Model -->
+      <div class="section">
+        <div class="slabel">Model</div>
+        <select class="field" id="model-select" onchange="switchModel(this.value)">
+          <option value="">— select model —</option>
+        </select>
+        <button class="btn ghost sm full" style="margin-top:6px" onclick="loadModelList()">↺ Refresh</button>
+      </div>
+
+      <!-- Grid -->
+      <div class="section">
+        <div class="slabel">Grid Size</div>
+        <div class="grid-size-row" id="gs-row">
+          <div class="gs-btn active" data-size="4"  onclick="setGridSize(4)">4×4</div>
+          <div class="gs-btn"       data-size="6"   onclick="setGridSize(6)">6×6</div>
+          <div class="gs-btn"       data-size="8"   onclick="setGridSize(8)">8×8</div>
+          <div class="gs-btn"       data-size="10"  onclick="setGridSize(10)">10×10</div>
+        </div>
+        <p class="hint" style="margin-top:8px">Larger grid = more detail but longer build time.</p>
+      </div>
+
+      <!-- Settings -->
+      <div class="section">
+        <div class="slabel">Settings</div>
+        <div class="slider-wrap">
+          <div class="slider-head">
+            <label>Truncation ψ</label>
+            <span class="v" id="tv">0.80</span>
+          </div>
+          <input type="range" min="0" max="1.5" step="0.05" value="0.8"
+            oninput="document.getElementById('tv').textContent=parseFloat(this.value).toFixed(2); cfg.truncation=+this.value">
+        </div>
+        <div class="slider-wrap">
+          <div class="slider-head">
+            <label>Samples (PCA quality)</label>
+            <span class="v" id="nv">512</span>
+          </div>
+          <input type="range" min="128" max="2048" step="128" value="512"
+            oninput="document.getElementById('nv').textContent=this.value; cfg.nSamples=+this.value">
+        </div>
+        <div class="slider-wrap">
+          <div class="slider-head">
+            <label>Preview debounce (ms)</label>
+            <span class="v" id="dv">80</span>
+          </div>
+          <input type="range" min="20" max="300" step="10" value="80"
+            oninput="document.getElementById('dv').textContent=this.value; cfg.debounce=+this.value">
+        </div>
+      </div>
+
+      <!-- Build -->
+      <div class="section">
+        <button class="btn primary full" id="build-btn" onclick="buildGrid()" disabled>
+          ▣ Build Grid
+        </button>
+        <p class="hint" style="margin-top:8px">
+          Generates all thumbnails via PCA projection.<br>
+          Takes ~30–120s depending on grid size + GPU.
+        </p>
+      </div>
+
+      <!-- Save -->
+      <div class="section">
+        <button class="btn ghost sm full" onclick="savePreview()">↓ Save preview image</button>
+      </div>
+
+      <!-- Shortcuts -->
+      <div class="section">
+        <div class="slabel">Shortcuts</div>
+        <p class="hint">
+          <b style="color:var(--text)">B</b> — Build grid<br>
+          <b style="color:var(--text)">S</b> — Save preview<br>
+          <b style="color:var(--text)">E</b> — Send to Walk Explorer
+        </p>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+<div id="toast"></div>
+
+<footer>
+  <div>
+    StyleGAN2 Latent Explorer · running on <span id="model-name">localhost:5000</span><br>
+    <span style="color:var(--muted); font-size:9px; letter-spacing:.06em">
+      Created by <a href="https://claude.ai/" style="color:var(--accent2); text-decoration:none">Claude</a> &amp; 
+      <a href="https://merzmensch.com/" style="color:var(--accent); text-decoration:none">Merzmensch</a> 
+      for the worldwide GenAI creative community
+    </span>
+  </div>
+  <div class="footer-links">
+    <a href="/ui">Walk Explorer</a>
+    <a href="/browser">Latent Browser</a>
+    <a href="/infinite">Infinite Map</a>
+  </div>
+</footer>
+
+<script>
+const API = '';
+const cfg = { gridSize: 4, truncation: 0.8, nSamples: 512, debounce: 80 };
+let gridBuilt = false;
+let lastZ = null;
+let probeTimer = null;
+let lastCell = -1;
+
+// ── API ───────────────────────────────────────────────────────
+async function api(path, method='GET', body=null) {
+  try {
+    const r = await fetch(API + path, {
+      method, headers: {'Content-Type': 'application/json'},
+      body: body ? JSON.stringify(body) : null
+    });
+    return await r.json();
+  } catch(e) { return null; }
+}
+
+// ── Status ────────────────────────────────────────────────────
+function setStatus(s, msg) {
+  document.getElementById('dot').className = 'dot ' + s;
+  document.getElementById('stxt').textContent = msg;
+}
+
+async function init() {
+  const s = await api('/status');
+  if (s && s.status !== 'error') {
+    if (s.status === 'ok') {
+      setStatus('live', `ready · z=${s.z_dim} · ${s.resolution}px`);
+      document.getElementById('build-btn').disabled = false;
+    } else {
+      setStatus('error', 'no model loaded');
+    }
+    loadModelList();
+    // Update load-status text
+    document.getElementById('load-status').innerHTML =
+      s.status === 'ok'
+        ? 'Model ready.<br><strong style="color:var(--text)">Click Build Grid to start.</strong>'
+        : 'Select a model, then click Build Grid.';
+  } else {
+    setStatus('error', 'server not reachable');
+    document.getElementById('load-status').textContent = 'Cannot reach server at localhost:5000';
+  }
+}
+
+// ── Model list ────────────────────────────────────────────────
+async function loadModelList() {
+  const data = await api('/list_models');
+  const sel  = document.getElementById('model-select');
+  sel.innerHTML = '<option value="">— select model —</option>';
+  if (data && data.models.length) {
+    data.models.forEach(p => {
+      const o = document.createElement('option');
+      o.value = p;
+      o.textContent = p.split(/[\\/]/).pop();
+      sel.appendChild(o);
+    });
+  }
+}
+
+async function switchModel(path) {
+  if (!path) return;
+  setStatus('busy', 'loading model…');
+  const r = await api('/load_model', 'POST', { path });
+  if (r && r.status === 'ok') {
+    setStatus('live', `ready · z=${r.z_dim} · ${r.resolution}px`);
+    document.getElementById('build-btn').disabled = false;
+    gridBuilt = false;
+    document.getElementById('loading-overlay').classList.remove('hidden');
+    document.getElementById('load-status').innerHTML =
+      'Model loaded.<br><strong style="color:var(--text)">Click Build Grid to start.</strong>';
+    toast('✅ Model loaded');
+  } else {
+    setStatus('error', 'load failed');
+    toast('❌ Failed to load model');
+  }
+}
+
+// ── Grid size ─────────────────────────────────────────────────
+function setGridSize(n) {
+  cfg.gridSize = n;
+  document.querySelectorAll('.gs-btn').forEach(b => {
+    b.classList.toggle('active', +b.dataset.size === n);
+  });
+}
+
+// ── Build grid ────────────────────────────────────────────────
+async function buildGrid() {
+  setStatus('busy', 'building PCA grid…');
+  document.getElementById('build-btn').disabled = true;
+  document.getElementById('loading-overlay').classList.remove('hidden');
+
+  const total = cfg.gridSize * cfg.gridSize;
+  document.getElementById('load-status').textContent =
+    `Sampling ${cfg.nSamples} vectors + generating ${total} thumbnails…`;
+
+  // Animate progress bar (fake — we don't get streaming updates)
+  let fakeProgress = 0;
+  const fakeTimer = setInterval(() => {
+    fakeProgress = Math.min(fakeProgress + (100 / total) * 0.8, 90);
+    document.getElementById('prog-fill').style.width = fakeProgress + '%';
+  }, 800);
+
+  const r = await api('/grid/build', 'POST', {
+    grid_size:  cfg.gridSize,
+    n_samples:  cfg.nSamples,
+    thumb_res:  128,
+    truncation: cfg.truncation,
+  });
+
+  clearInterval(fakeTimer);
+
+  if (!r || r.error) {
+    setStatus('error', 'build failed');
+    document.getElementById('load-status').textContent = 'Build failed: ' + (r?.error || 'unknown error');
+    document.getElementById('build-btn').disabled = false;
+    return;
+  }
+
+  document.getElementById('prog-fill').style.width = '100%';
+  document.getElementById('load-status').textContent = 'Rendering grid…';
+
+  renderGrid(r.grid_imgs, r.grid_size);
+
+  setTimeout(() => {
+    document.getElementById('loading-overlay').classList.add('hidden');
+    gridBuilt = true;
+    document.getElementById('build-btn').disabled = false;
+    setStatus('live', `grid ready · ${r.grid_size}×${r.grid_size}`);
+    toast(`✅ ${r.grid_size}×${r.grid_size} grid built`);
+  }, 300);
+}
+
+// ── Render thumbnails into grid ───────────────────────────────
+function renderGrid(imgs, gridSize) {
+  const container = document.getElementById('grid-container');
+  container.style.gridTemplateColumns = `repeat(${gridSize}, 1fr)`;
+  container.style.gridTemplateRows    = `repeat(${gridSize}, 1fr)`;
+  container.innerHTML = '';
+
+  imgs.forEach((b64, i) => {
+    const cell = document.createElement('div');
+    cell.className   = 'grid-cell';
+    cell.dataset.idx = i;
+
+    const img = document.createElement('img');
+    img.src = 'data:image/jpeg;base64,' + b64;
+    img.loading = 'lazy';
+
+    cell.appendChild(img);
+    container.appendChild(cell);
+  });
+}
+
+// ── Mouse navigation ──────────────────────────────────────────
+const area = document.getElementById('canvas-area');
+
+area.addEventListener('mousemove', e => {
+  if (!gridBuilt) return;
+
+  const rect = area.getBoundingClientRect();
+  const nx   = (e.clientX - rect.left)  / rect.width;
+  const ny   = (e.clientY - rect.top)   / rect.height;
+
+  // Move crosshair
+  document.getElementById('ch-h').style.top  = (e.clientY - rect.top)  + 'px';
+  document.getElementById('ch-v').style.left = (e.clientX - rect.left) + 'px';
+
+  // Update coord badge
+  document.getElementById('bx').textContent = nx.toFixed(3);
+  document.getElementById('by').textContent = ny.toFixed(3);
+
+  // Highlight hovered grid cell
+  const gs   = cfg.gridSize;
+  const col  = Math.floor(nx * gs);
+  const row  = Math.floor(ny * gs);
+  const idx  = row * gs + col;
+  if (idx !== lastCell) {
+    document.querySelectorAll('.grid-cell').forEach(c => c.classList.remove('active'));
+    const cell = document.querySelector(`.grid-cell[data-idx="${idx}"]`);
+    if (cell) cell.classList.add('active');
+    lastCell = idx;
+  }
+
+  // Debounced full-res probe
+  clearTimeout(probeTimer);
+  probeTimer = setTimeout(() => probe(nx, ny), cfg.debounce);
+});
+
+area.addEventListener('mouseleave', () => {
+  clearTimeout(probeTimer);
+  document.querySelectorAll('.grid-cell').forEach(c => c.classList.remove('active'));
+  lastCell = -1;
+});
+
+async function probe(nx, ny) {
+  const img = document.getElementById('preview-img');
+  const ph  = document.getElementById('preview-ph');
+
+  img.classList.add('loading');
+
+  const r = await api('/grid/probe', 'POST', {
+    nx, ny, truncation: cfg.truncation
+  });
+
+  if (!r || r.error) return;
+
+  lastZ = r.z;
+  ph.style.display  = 'none';
+  img.style.display = 'block';
+  img.onload = () => img.classList.remove('loading');
+  img.src = 'data:image/jpeg;base64,' + r.image;
+
+  document.getElementById('coord-badge').style.display    = 'block';
+  document.getElementById('send-btn').style.display       = 'block';
+  document.getElementById('send-inf-btn').style.display   = 'block';
+}
+
+// Click to pin + open full res
+area.addEventListener('click', async e => {
+  if (!gridBuilt) return;
+  const rect = area.getBoundingClientRect();
+  const nx   = (e.clientX - rect.left) / rect.width;
+  const ny   = (e.clientY - rect.top)  / rect.height;
+
+  // Nächstes Grid-Thumbnail — exakten z-Vektor holen
+  const gs  = cfg.gridSize;
+  const col = Math.floor(nx * gs);
+  const row = Math.floor(ny * gs);
+  const z   = await api('/grid/get_z', 'POST', { row, col });
+  if (z && z.z) lastZ = z.z;
+
+  // Immediately probe at full res
+  await probe(nx, ny);
+  toast('📌 Position sampled — click → Walk Explorer to continue');
+});
+
+// ── Send to Walk Explorer ─────────────────────────────────────
+async function sendToExplorer() {
+  if (!lastZ) { toast('No position sampled yet'); return; }
+  const r = await api('/grid/pin_probe', 'POST', { z: lastZ });
+  if (r && r.status === 'ok') {
+    toast('✅ Sent to Walk Explorer');
+    setTimeout(() => { window.open('/ui', '_blank'); }, 600);
+  }
+}
+
+// ── Send to Infinite Map ──────────────────────────────────────
+async function sendToInfinite() {
+  if (!lastZ) { toast('No position sampled yet'); return; }
+  const r = await api('/grid/pin_infinite', 'POST', { z: lastZ });
+  if (r && r.status === 'ok') {
+    toast('✅ Sent to Infinite Map');
+    setTimeout(() => { window.open('/infinite', '_blank'); }, 600);
+  }
+}
+
+// ── Save ──────────────────────────────────────────────────────
+function savePreview() {
+  const img = document.getElementById('preview-img');
+  if (!img.src || img.style.display === 'none') { toast('Nothing to save'); return; }
+  const a = document.createElement('a');
+  a.href = img.src;
+  a.download = `latent_browser_${Date.now()}.jpg`;
+  a.click();
+}
+
+// ── Toast ─────────────────────────────────────────────────────
+let _tt;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  clearTimeout(_tt); _tt = setTimeout(() => el.classList.remove('show'), 2600);
+}
+
+// ── Keyboard ──────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.key === 'b' || e.key === 'B') buildGrid();
+  if (e.key === 's' || e.key === 'S') savePreview();
+  if (e.key === 'e' || e.key === 'E') sendToExplorer();
+});
+
+init();
+</script>
+</body>
+</html>

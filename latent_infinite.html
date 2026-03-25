@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Infinite Latent Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Bebas+Neue&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:      #080810;
+    --surface: #10101a;
+    --panel:   #14141e;
+    --border:  #222230;
+    --accent:  #00ffaa;
+    --accent2: #ff4466;
+    --accent3: #7766ff;
+    --text:    #ddddee;
+    --muted:   #444458;
+    --cell:    96px;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    height: 100vh;
+    display: grid;
+    grid-template-rows: 44px 1fr;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 18px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .logo { font-family: 'Bebas Neue', sans-serif; font-size: 20px; letter-spacing: .1em; }
+  .logo span { color: var(--accent); }
+  .hrow { display: flex; align-items: center; gap: 14px; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+  .dot.live  { background: var(--accent);  box-shadow: 0 0 8px var(--accent); }
+  .dot.error { background: var(--accent2); }
+  #stxt { font-size: 10px; color: var(--muted); }
+  .nav-links { display: flex; gap: 14px; font-size: 10px; }
+  .nav-links a { color: var(--muted); text-decoration: none; }
+  .nav-links a:hover { color: var(--text); }
+
+  /* ── Main layout ── */
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr 220px;
+    overflow: hidden;
+  }
+
+  /* ── Canvas ── */
+  .map-wrap {
+    position: relative;
+    overflow: hidden;
+    background: var(--bg);
+    cursor: grab;
+  }
+  .map-wrap.dragging { cursor: grabbing; }
+
+  /* Infinite grid canvas */
+  #map-canvas {
+    position: absolute;
+    top: 0; left: 0;
+    /* tiles positioned absolutely inside */
+  }
+
+  /* Individual tile */
+  .tile {
+    position: absolute;
+    width: var(--cell);
+    height: var(--cell);
+    border: 1px solid var(--border);
+    overflow: hidden;
+    transition: border-color .15s;
+    background: var(--surface);
+  }
+  .tile img {
+    width: 100%; height: 100%;
+    object-fit: cover;
+    display: block;
+    opacity: 0;
+    transition: opacity .3s;
+  }
+  .tile img.loaded { opacity: 1; }
+  .tile.loading::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(0,255,170,.05), transparent);
+    animation: shimmer 1.2s infinite;
+  }
+  @keyframes shimmer { from{transform:translateX(-100%)} to{transform:translateX(100%)} }
+  .tile:hover { border-color: var(--accent); z-index: 2; }
+  .tile.selected { border-color: var(--accent); border-width: 2px; z-index: 3; }
+
+  /* Coord label overlay */
+  .tile .coord {
+    position: absolute;
+    bottom: 2px; right: 3px;
+    font-size: 8px;
+    color: rgba(255,255,255,.25);
+    pointer-events: none;
+  }
+
+  /* Crosshair center marker */
+  .center-mark {
+    position: absolute;
+    pointer-events: none;
+    z-index: 10;
+    transform: translate(-50%, -50%);
+  }
+  .center-mark::before, .center-mark::after {
+    content: '';
+    position: absolute;
+    background: rgba(0,255,170,.4);
+  }
+  .center-mark::before { width: 1px; height: 20px; left: 0; top: -10px; }
+  .center-mark::after  { width: 20px; height: 1px; top: 0; left: -10px; }
+
+  /* ── Right panel ── */
+  .side-panel {
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  .side-panel::-webkit-scrollbar { width: 3px; }
+  .side-panel::-webkit-scrollbar-thumb { background: var(--border); }
+
+  .section { padding: 14px 14px; border-bottom: 1px solid var(--border); }
+  .slabel { font-size: 9px; letter-spacing: .15em; color: var(--muted); text-transform: uppercase; margin-bottom: 10px; }
+
+  /* Preview */
+  .preview-wrap {
+    flex-shrink: 0;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    position: relative;
+  }
+  #preview {
+    width: 100%; aspect-ratio: 1;
+    object-fit: cover; display: block;
+  }
+  .preview-ph {
+    width: 100%; aspect-ratio: 1;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-size: 10px; text-align: center;
+    line-height: 1.6; padding: 16px;
+  }
+  .preview-coords {
+    position: absolute; bottom: 6px; left: 6px;
+    font-size: 9px; color: rgba(255,255,255,.4);
+    background: rgba(0,0,0,.6); padding: 2px 6px; border-radius: 3px;
+  }
+
+  /* Sliders */
+  .slider-wrap { margin-bottom: 10px; }
+  .slider-wrap:last-child { margin-bottom: 0; }
+  .slider-head { display: flex; justify-content: space-between; margin-bottom: 5px; }
+  .slider-head label { font-size: 11px; }
+  .slider-head .v { font-size: 11px; color: var(--accent); min-width: 36px; text-align: right; }
+  input[type=range] {
+    -webkit-appearance: none; width: 100%; height: 2px;
+    background: var(--border); border-radius: 2px; outline: none; cursor: pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 13px; height: 13px;
+    border-radius: 50%; background: var(--accent);
+    border: 2px solid var(--bg); transition: transform .1s;
+  }
+  input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.3); }
+
+  /* Buttons */
+  .btn {
+    cursor: pointer; border: none; border-radius: 4px;
+    font-family: 'DM Mono', monospace; font-size: 11px;
+    padding: 7px 12px; transition: all .15s; white-space: nowrap;
+  }
+  .btn:disabled { opacity: .35; cursor: not-allowed; }
+  .primary   { background: var(--accent); color: #000; font-weight: 500; }
+  .primary:not(:disabled):hover { filter: brightness(1.2); }
+  .ghost     { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .ghost:not(:disabled):hover { color: var(--text); border-color: var(--accent); }
+  .sm  { padding: 5px 10px; font-size: 10px; }
+  .full { width: 100%; }
+  .row { display: flex; gap: 6px; }
+
+  /* Position display */
+  .pos-display {
+    font-size: 10px; color: var(--muted);
+    line-height: 1.8; margin-bottom: 8px;
+  }
+  .pos-display span { color: var(--accent3); }
+
+  /* Hint */
+  .hint { font-size: 10px; color: var(--muted); line-height: 1.6; margin-top: 6px; }
+
+  /* Toast */
+  #toast {
+    position: fixed; bottom: 24px; left: 50%;
+    transform: translateX(-50%) translateY(16px);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 4px; padding: 7px 16px;
+    font-size: 11px; color: var(--text);
+    opacity: 0; transition: all .25s; z-index: 100; pointer-events: none;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Infinite <span>Latent</span> Map by Claude and Merzmensch</div>
+  <div class="hrow">
+    <div class="dot" id="dot"></div>
+    <span id="stxt">connecting…</span>
+  </div>
+  <div class="nav-links">
+    <a href="/browser">→ Browser</a>
+    <a href="/ui">→ Walk Explorer</a>
+  </div>
+</header>
+
+<div class="layout">
+
+  <!-- MAP CANVAS -->
+  <div class="map-wrap" id="map-wrap">
+    <div id="map-canvas"></div>
+    <div class="center-mark" id="center-mark"></div>
+  </div>
+
+  <!-- SIDE PANEL -->
+  <div class="side-panel">
+
+    <!-- Preview of clicked tile -->
+<div class="preview-wrap">
+  <div class="preview-ph" id="preview-ph">Click a tile<br>for full preview</div>
+  <img id="preview" style="display:none" alt="preview">
+  <div class="preview-coords" id="preview-coords" style="display:none"></div>
+  <button id="send-btn" onclick="sendToExplorer()" style="
+    display:none;
+    position:absolute;
+    top:8px; right:8px;
+    background:rgba(0,0,0,0.8);
+    border:1px solid #00ffaa;
+    border-radius:4px;
+    color:#00ffaa;
+    font-family:'DM Mono',monospace;
+    font-size:10px;
+    padding:4px 10px;
+    cursor:pointer;
+    transition:all .15s;
+  ">→ Walk Explorer</button>
+</div>
+
+    <div class="section">
+      <div class="slabel">Position</div>
+      <div class="pos-display">
+        x: <span id="px">0.00</span><br>
+        y: <span id="py">0.00</span><br>
+        zoom: <span id="pz">1.0×</span>
+      </div>
+      <div class="row">
+        <button class="btn ghost sm" style="flex:1" onclick="resetView()">⌂ Reset</button>
+        <button class="btn ghost sm" style="flex:1" onclick="randomJump()">⚄ Jump</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="slabel">Truncation ψ</div>
+      <div class="slider-wrap">
+        <div class="slider-head">
+          <label>ψ value</label>
+          <span class="v" id="tv">0.70</span>
+        </div>
+        <input type="range" id="trunc-slider" min="0" max="1.5" step="0.05" value="0.7"
+          oninput="document.getElementById('tv').textContent=parseFloat(this.value).toFixed(2)"
+          onchange="setTruncation(+this.value)">
+      </div>
+      <p class="hint">Low = similar/safe<br>High = diverse/extreme</p>
+    </div>
+
+    <div class="section">
+      <div class="slabel">Sampling Distance</div>
+      <div class="slider-wrap">
+        <div class="slider-head">
+          <label>Step size</label>
+          <span class="v" id="sv">0.30</span>
+        </div>
+        <input type="range" id="step-slider" min="0.05" max="2.0" step="0.05" value="0.3"
+          oninput="document.getElementById('sv').textContent=parseFloat(this.value).toFixed(2); cfg.stepSize=+this.value; clearCache(); redraw()">
+      </div>
+      <p class="hint">Distance between adjacent tiles in latent space.</p>
+    </div>
+
+    <div class="section">
+      <div class="slabel">Actions</div>
+      <button class="btn ghost sm full" onclick="sendToExplorer()" style="margin-bottom:6px">→ Send to Walk Explorer</button>
+      <button class="btn ghost sm full" onclick="savePreview()">↓ Save preview</button>
+    </div>
+
+    <div class="section">
+      <div class="slabel">Keyboard</div>
+      <p class="hint">
+        <b style="color:var(--text)">Drag</b> — pan map<br>
+        <b style="color:var(--text)">Scroll</b> — zoom<br>
+        <b style="color:var(--text)">R</b> — random jump<br>
+        <b style="color:var(--text)">0</b> — reset view<br>
+        <b style="color:var(--text)">E</b> — send to explorer
+      </p>
+    </div>
+
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<footer>
+  <div>
+    StyleGAN2 Latent Explorer · running on <span id="model-name">localhost:5000</span><br>
+    <span style="color:var(--muted); font-size:9px; letter-spacing:.06em">
+      Created by <a href="https://claude.ai/" style="color:var(--accent2); text-decoration:none">Claude</a> &amp; 
+      <a href="https://merzmensch.com/" style="color:var(--accent); text-decoration:none">Merzmensch</a> 
+      for the worldwide GenAI creative community
+    </span>
+  </div>
+  <div class="footer-links">
+    <a href="/ui">Walk Explorer</a>
+    <a href="/browser">Latent Browser</a>
+    <a href="/infinite">Infinite Map</a>
+  </div>
+</footer>
+
+<script>
+const API = 'http://localhost:5000';
+
+// ── Config ────────────────────────────────────────────────────
+const cfg = {
+  cellSize:   96,       // px per tile
+  stepSize:   0.3,      // latent space distance between tiles
+  truncation: 0.7,
+  padding:    2,        // extra tiles beyond viewport edge
+  centerZ:    null,     // pinned center z-vector from Latent Browser
+};
+
+// ── State ─────────────────────────────────────────────────────
+let offsetX = 0, offsetY = 0;   // pan offset in pixels
+let dragging = false, dragStartX, dragStartY, dragOffX, dragOffY;
+let tileCache = {};              // key "gx,gy" → {img, z}
+let pendingTiles = new Set();    // tiles currently being fetched
+let selectedTile = null;
+let selectedZ = null;
+let truncation = 0.7;
+let animFrame = null;
+let connected = false;
+
+// ── API ───────────────────────────────────────────────────────
+async function api(path, method='GET', body=null) {
+  try {
+    const r = await fetch(API + path, {
+      method, headers: {'Content-Type': 'application/json'},
+      body: body ? JSON.stringify(body) : null
+    });
+    return await r.json();
+  } catch(e) { return null; }
+}
+
+// ── Init ──────────────────────────────────────────────────────
+async function init() {
+  const s = await api('/status');
+  if (s && s.status === 'ok') {
+    connected = true;
+    setStatus('live', `ready · z=${s.z_dim} · ${s.resolution}px`);
+
+    // Check if a center point was sent from Latent Browser
+    const c = await api('/infinite/center');
+    if (c && c.center) {
+      cfg.centerZ = c.center;
+      toast('📌 Centered on pinned position from Latent Browser');
+    }
+
+    redraw();
+  } else {
+    setStatus('error', 'server not reachable');
+  }
+}
+
+function setStatus(cls, msg) {
+  document.getElementById('dot').className = 'dot ' + cls;
+  document.getElementById('stxt').textContent = msg;
+}
+
+// ── Coordinate mapping ────────────────────────────────────────
+// Grid cell (gx, gy) → pixel position on screen
+function cellToScreen(gx, gy) {
+  const wrap = document.getElementById('map-wrap');
+  const cx = wrap.clientWidth  / 2;
+  const cy = wrap.clientHeight / 2;
+  return {
+    x: cx + offsetX + gx * cfg.cellSize,
+    y: cy + offsetY + gy * cfg.cellSize,
+  };
+}
+
+// Screen pixel → grid cell
+function screenToCell(px, py) {
+  const wrap = document.getElementById('map-wrap');
+  const cx = wrap.clientWidth  / 2;
+  const cy = wrap.clientHeight / 2;
+  return {
+    gx: Math.floor((px - cx - offsetX) / cfg.cellSize),
+    gy: Math.floor((py - cy - offsetY) / cfg.cellSize),
+  };
+}
+
+// Grid cell → latent space coordinates (2D slice)
+function cellToLatent(gx, gy) {
+  return { lx: gx * cfg.stepSize, ly: gy * cfg.stepSize };
+}
+
+// ── Tile generation ───────────────────────────────────────────
+function tileKey(gx, gy) { return `${gx},${gy}`; }
+
+async function fetchTile(gx, gy) {
+  const key = tileKey(gx, gy);
+  if (tileCache[key] || pendingTiles.has(key)) return;
+  pendingTiles.add(key);
+
+  const { lx, ly } = cellToLatent(gx, gy);
+  const r = await api('/infinite/tile', 'POST', {
+    lx, ly, truncation: cfg.truncation,
+    center_z: cfg.centerZ   // ← pass center if set
+  });
+
+  pendingTiles.delete(key);
+  if (!r || r.error) return;
+
+  tileCache[key] = { b64: r.image, z: r.z };
+
+  // Update existing tile DOM element if present
+  const el = document.getElementById('tile-' + key.replace(',', '_'));
+  if (el) {
+    const img = el.querySelector('img');
+    img.src = 'data:image/jpeg;base64,' + r.image;
+    img.onload = () => { img.classList.add('loaded'); el.classList.remove('loading'); };
+  }
+}
+
+// ── Redraw ────────────────────────────────────────────────────
+function redraw() {
+  const wrap = document.getElementById('map-wrap');
+  const canvas = document.getElementById('map-canvas');
+  const W = wrap.clientWidth;
+  const H = wrap.clientHeight;
+
+  // How many tiles fit + padding
+  const colsHalf = Math.ceil(W / 2 / cfg.cellSize) + cfg.padding;
+  const rowsHalf = Math.ceil(H / 2 / cfg.cellSize) + cfg.padding;
+
+  // Center offset in grid coordinates
+  const centerGX = -Math.round(offsetX / cfg.cellSize);
+  const centerGY = -Math.round(offsetY / cfg.cellSize);
+
+  // Set of tiles we need
+  const needed = new Set();
+  for (let gx = centerGX - colsHalf; gx <= centerGX + colsHalf; gx++) {
+    for (let gy = centerGY - rowsHalf; gy <= centerGY + rowsHalf; gy++) {
+      needed.add(tileKey(gx, gy));
+    }
+  }
+
+  // Remove tiles no longer visible
+  const existing = canvas.querySelectorAll('.tile');
+  existing.forEach(el => {
+    if (!needed.has(el.dataset.key)) el.remove();
+  });
+
+  // Add new tiles
+  needed.forEach(key => {
+    const [gx, gy] = key.split(',').map(Number);
+    const pos = cellToScreen(gx, gy);
+
+    let el = document.getElementById('tile-' + key.replace(',', '_'));
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'tile';
+      el.id = 'tile-' + key.replace(',', '_');
+      el.dataset.key = key;
+      el.dataset.gx = gx;
+      el.dataset.gy = gy;
+
+      const img = document.createElement('img');
+      el.appendChild(img);
+
+      const coord = document.createElement('div');
+      coord.className = 'coord';
+      coord.textContent = `${gx},${gy}`;
+      el.appendChild(coord);
+
+      el.addEventListener('click', () => onTileClick(gx, gy, key));
+      canvas.appendChild(el);
+
+      // Load image
+      if (tileCache[key]) {
+        img.src = 'data:image/jpeg;base64,' + tileCache[key].b64;
+        img.onload = () => img.classList.add('loaded');
+      } else {
+        el.classList.add('loading');
+        fetchTile(gx, gy);
+      }
+    }
+
+    // Update position
+    el.style.left = pos.x + 'px';
+    el.style.top  = pos.y + 'px';
+    el.style.width  = cfg.cellSize + 'px';
+    el.style.height = cfg.cellSize + 'px';
+
+    // Mark selected
+    el.classList.toggle('selected', key === selectedTile);
+  });
+
+  // Update center mark
+  const mark = document.getElementById('center-mark');
+  mark.style.left = (W / 2) + 'px';
+  mark.style.top  = (H / 2) + 'px';
+
+  // Update position display
+  const cx = -offsetX / cfg.cellSize * cfg.stepSize;
+  const cy = -offsetY / cfg.cellSize * cfg.stepSize;
+  document.getElementById('px').textContent = cx.toFixed(2);
+  document.getElementById('py').textContent = cy.toFixed(2);
+}
+
+// ── Tile click ────────────────────────────────────────────────
+function onTileClick(gx, gy, key) {
+  selectedTile = key;
+  redraw();
+
+  const cached = tileCache[key];
+  if (cached) {
+    showPreview(cached.b64, cached.z, gx, gy);
+  }
+}
+
+function showPreview(b64, z, gx, gy) {
+  selectedZ = z;
+  const img = document.getElementById('preview');
+  const ph  = document.getElementById('preview-ph');
+  ph.style.display = 'none';
+  img.style.display = 'block';
+  img.src = 'data:image/jpeg;base64,' + b64;
+  document.getElementById('preview-coords').style.display = 'block';
+  document.getElementById('preview-coords').textContent = `${gx}, ${gy}`;
+  document.getElementById('send-btn').style.display = 'block';
+}
+
+// ── Drag to pan ───────────────────────────────────────────────
+const wrap = document.getElementById('map-wrap');
+
+wrap.addEventListener('mousedown', e => {
+  dragging = true;
+  dragStartX = e.clientX;
+  dragStartY = e.clientY;
+  dragOffX = offsetX;
+  dragOffY = offsetY;
+  wrap.classList.add('dragging');
+  e.preventDefault();
+});
+
+window.addEventListener('mousemove', e => {
+  if (!dragging) return;
+  offsetX = dragOffX + (e.clientX - dragStartX);
+  offsetY = dragOffY + (e.clientY - dragStartY);
+  redraw();
+});
+
+window.addEventListener('mouseup', () => {
+  if (dragging) {
+    dragging = false;
+    wrap.classList.remove('dragging');
+  }
+});
+
+// Scroll to zoom (changes cell size = zoom level)
+wrap.addEventListener('wheel', e => {
+  e.preventDefault();
+  const delta = e.deltaY > 0 ? -8 : 8;
+  cfg.cellSize = Math.max(48, Math.min(192, cfg.cellSize + delta));
+  document.getElementById('pz').textContent =
+    (cfg.cellSize / 96).toFixed(1) + '×';
+  redraw();
+}, { passive: false });
+
+// ── Controls ──────────────────────────────────────────────────
+function resetView() {
+  offsetX = 0; offsetY = 0;
+  cfg.cellSize = 96;
+  document.getElementById('pz').textContent = '1.0×';
+  redraw();
+}
+
+function randomJump() {
+  offsetX = (Math.random() * 200 - 100) * cfg.cellSize;
+  offsetY = (Math.random() * 200 - 100) * cfg.cellSize;
+  clearCache();
+  redraw();
+  toast('⚄ Jumped to new region');
+}
+
+function setTruncation(v) {
+  cfg.truncation = v;
+  truncation = v;
+  clearCache();
+  redraw();
+  toast(`ψ = ${v.toFixed(2)} — regenerating tiles`);
+}
+
+function clearCache() {
+  tileCache = {};
+  pendingTiles.clear();
+  document.getElementById('map-canvas').innerHTML = '';
+}
+
+async function sendToExplorer() {
+  if (!selectedZ) { toast('Click a tile first'); return; }
+  const r = await api('/grid/pin_probe', 'POST', { z: selectedZ });
+  if (r && r.status === 'ok') {
+    toast('✅ Sent to Walk Explorer');
+    setTimeout(() => window.open('/ui', '_blank'), 500);
+  }
+}
+
+function savePreview() {
+  const img = document.getElementById('preview');
+  if (!img.src || img.style.display === 'none') { toast('Click a tile first'); return; }
+  const a = document.createElement('a');
+  a.href = img.src;
+  a.download = `latent_map_${Date.now()}.jpg`;
+  a.click();
+}
+
+// ── Keyboard ──────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.key === 'r' || e.key === 'R') randomJump();
+  if (e.key === '0') resetView();
+  if (e.key === 'e' || e.key === 'E') sendToExplorer();
+});
+
+// ── Toast ─────────────────────────────────────────────────────
+let _tt;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  clearTimeout(_tt); _tt = setTimeout(() => el.classList.remove('show'), 2400);
+}
+
+// ── Resize ────────────────────────────────────────────────────
+window.addEventListener('resize', redraw);
+
+init();
+</script>
+</body>
+</html>

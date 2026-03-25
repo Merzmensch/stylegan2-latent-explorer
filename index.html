@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StyleGAN2 Latent Explorer by Claude and Merzmensch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Bebas+Neue&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:       #080810;
+    --surface:  #0f0f1a;
+    --panel:    #14141f;
+    --border:   #1e1e2e;
+    --border2:  #2a2a3f;
+    --accent:   #00ffaa;
+    --accent2:  #7c6eff;
+    --accent3:  #ff6e9c;
+    --text:     #e0e0f0;
+    --muted:    #44445a;
+    --muted2:   #666680;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Mono', monospace;
+    font-size: 12px;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Header ── */
+  header {
+    padding: 32px 48px 0;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+  }
+  .logo-block { }
+  .logo {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 42px;
+    letter-spacing: .06em;
+    color: var(--text);
+    line-height: 1;
+  }
+  .logo em { color: var(--accent); font-style: normal; }
+  .tagline {
+    font-size: 11px;
+    color: var(--muted2);
+    letter-spacing: .08em;
+    margin-top: 6px;
+  }
+  .status-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--panel);
+    border: 1px solid var(--border2);
+    border-radius: 20px;
+    padding: 6px 14px;
+    font-size: 10px;
+    color: var(--muted2);
+    margin-top: 8px;
+  }
+  .sdot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--muted);
+  }
+  .sdot.live { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+  .sdot.error { background: var(--accent3); }
+
+  /* ── Hero ── */
+  .hero {
+    padding: 48px 48px 0;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 48px;
+    align-items: center;
+  }
+  .hero-text h2 {
+    font-family: 'Syne', sans-serif;
+    font-size: 28px;
+    font-weight: 800;
+    line-height: 1.25;
+    margin-bottom: 16px;
+    color: var(--text);
+  }
+  .hero-text h2 span { color: var(--accent2); }
+  .hero-text p {
+    font-size: 12px;
+    color: var(--muted2);
+    line-height: 1.9;
+    max-width: 420px;
+  }
+  .hero-text p strong { color: var(--text); font-weight: 500; }
+
+  /* animated latent dots */
+  .hero-visual {
+    position: relative;
+    height: 220px;
+    border: 1px solid var(--border2);
+    border-radius: 12px;
+    overflow: hidden;
+    background: var(--panel);
+  }
+  .dot-grid {
+    position: absolute; inset: 0;
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    grid-template-rows: repeat(6, 1fr);
+    gap: 2px;
+    padding: 8px;
+  }
+  .dot-cell {
+    border-radius: 3px;
+    background: var(--border);
+    animation: pulse-cell var(--dur, 3s) ease-in-out infinite;
+    animation-delay: var(--del, 0s);
+  }
+  @keyframes pulse-cell {
+    0%,100% { opacity: .2; background: var(--border); }
+    50%      { opacity: 1;  background: var(--col, var(--accent2)); }
+  }
+  .hero-visual-label {
+    position: absolute;
+    bottom: 10px; left: 12px;
+    font-size: 9px;
+    color: var(--muted);
+    letter-spacing: .1em;
+  }
+
+  /* ── Divider ── */
+  .divider {
+    margin: 48px 48px 0;
+    border: none;
+    border-top: 1px solid var(--border);
+  }
+
+  /* ── Tools grid ── */
+  .tools-label {
+    padding: 32px 48px 16px;
+    font-size: 9px;
+    letter-spacing: .18em;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+
+  .tools {
+    padding: 0 48px;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+
+  .tool-card {
+    border: 1px solid var(--border2);
+    border-radius: 10px;
+    overflow: hidden;
+    text-decoration: none;
+    color: var(--text);
+    display: block;
+    transition: border-color .2s, transform .15s;
+    background: var(--panel);
+  }
+  .tool-card:hover {
+    border-color: var(--card-accent, var(--accent2));
+    transform: translateY(-2px);
+  }
+
+  /* Animated preview area */
+  .card-preview {
+    height: 140px;
+    background: var(--surface);
+    position: relative;
+    overflow: hidden;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* Walk Explorer preview — single large image placeholder with scan lines */
+  .preview-walk {
+    background: #0a0a14;
+  }
+  .preview-walk .scan {
+    position: absolute; inset: 0;
+    background: repeating-linear-gradient(
+      to bottom,
+      transparent 0px, transparent 3px,
+      rgba(124,110,255,.04) 3px, rgba(124,110,255,.04) 4px
+    );
+  }
+  .preview-walk .img-mock {
+    position: absolute;
+    inset: 12px;
+    border: 1px solid #2a2a4a;
+    border-radius: 4px;
+    background: #111128;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .preview-walk .img-mock::after {
+    content: '';
+    width: 60px; height: 60px;
+    border-radius: 50%;
+    background: radial-gradient(circle, #3a3060 0%, #111128 70%);
+    animation: breathe 3s ease-in-out infinite;
+  }
+  @keyframes breathe {
+    0%,100% { transform: scale(1); opacity: .6; }
+    50%      { transform: scale(1.15); opacity: 1; }
+  }
+  .walk-controls {
+    position: absolute;
+    bottom: 18px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 6px; align-items: center;
+  }
+  .wc-btn {
+    width: 28px; height: 28px; border-radius: 50%;
+    background: var(--accent2);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .wc-btn-sm {
+    width: 20px; height: 20px; border-radius: 4px;
+    background: #2a2a3a;
+  }
+
+  /* Browser preview — small grid */
+  .preview-browser {
+    background: #080810;
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    grid-template-rows: repeat(3, 1fr);
+    gap: 2px;
+    padding: 8px;
+  }
+  .browser-cell {
+    border-radius: 2px;
+    background: var(--border2);
+    animation: flicker var(--dur2, 4s) ease-in-out infinite;
+    animation-delay: var(--del2, 0s);
+  }
+  @keyframes flicker {
+    0%,100% { opacity: .3; }
+    50%      { opacity: .9; filter: brightness(1.4); }
+  }
+  .browser-highlight {
+    border: 1px solid var(--accent);
+    background: #0a2a1a;
+  }
+
+  /* Infinite map preview — panning grid */
+  .preview-infinite {
+    background: #06060e;
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    grid-template-rows: repeat(4, 1fr);
+    gap: 1px;
+    padding: 4px;
+    animation: pan 8s linear infinite;
+  }
+  @keyframes pan {
+    0%   { transform: translate(0, 0); }
+    25%  { transform: translate(-4px, -3px); }
+    50%  { transform: translate(3px, -4px); }
+    75%  { transform: translate(-3px, 4px); }
+    100% { transform: translate(0, 0); }
+  }
+  .inf-cell {
+    border-radius: 2px;
+    background: var(--border);
+    opacity: .4;
+  }
+  .inf-cell.bright { opacity: .85; background: #1a1a2a; }
+
+  /* Card body */
+  .card-body { padding: 14px 16px; }
+  .card-accent-line {
+    width: 24px; height: 2px;
+    background: var(--card-accent, var(--accent2));
+    border-radius: 1px;
+    margin-bottom: 10px;
+  }
+  .card-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 14px;
+    font-weight: 700;
+    margin-bottom: 6px;
+    color: var(--text);
+  }
+  .card-desc {
+    font-size: 10px;
+    color: var(--muted2);
+    line-height: 1.7;
+    margin-bottom: 12px;
+  }
+  .card-tags {
+    display: flex; gap: 5px; flex-wrap: wrap;
+  }
+  .tag {
+    font-size: 9px;
+    letter-spacing: .06em;
+    background: var(--border2);
+    color: var(--muted2);
+    border-radius: 3px;
+    padding: 3px 8px;
+  }
+  .card-arrow {
+    float: right;
+    font-size: 14px;
+    color: var(--card-accent, var(--accent2));
+    margin-top: -2px;
+  }
+
+  /* ── Footer ── */
+  footer {
+    margin-top: auto;
+    padding: 32px 48px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .footer-links { display: flex; gap: 20px; }
+  .footer-links a { color: var(--muted); text-decoration: none; }
+  .footer-links a:hover { color: var(--text); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo-block">
+    <div class="logo">Latent <em>Explorer</em> by Claude and Merzmensch</div>
+    <div class="tagline">StyleGAN2 · Local GPU · Your models</div>
+  </div>
+  <div class="status-pill">
+    <span class="sdot" id="sdot"></span>
+    <span id="stxt">connecting…</span>
+  </div>
+</header>
+
+<div class="hero">
+  <div class="hero-text">
+    <h2>Navigate the <span>latent space</span> of your trained models</h2>
+    <p>
+      A local toolkit for exploring StyleGAN2 models trained on your own images.
+      <strong>Walk</strong> through the latent space frame by frame,
+      <strong>browse</strong> a 2D PCA projection of your model,
+      or <strong>pan infinitely</strong> through a continuous latent map —
+      all running on your own GPU, no cloud required.
+    </p>
+  </div>
+  <div class="hero-visual">
+    <div class="dot-grid" id="dot-grid"></div>
+    <div class="hero-visual-label">LATENT SPACE · 512 DIMENSIONS</div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<div class="tools-label">Choose your tool</div>
+
+<div class="tools">
+
+  <!-- Latent Browser -->
+  <a href="/browser" class="tool-card" style="--card-accent: #00ffaa">
+    <div class="card-preview preview-browser" id="browser-preview">
+    </div>
+    <div class="card-body">
+      <div class="card-accent-line"></div>
+      <div class="card-title">Latent Browser <span class="card-arrow">→</span></div>
+      <div class="card-desc">
+        PCA projection of your model's latent space as a 2D grid.
+        Move your mouse to explore — click to preview at full resolution.
+      </div>
+      <div class="card-tags">
+        <span class="tag">PCA grid</span>
+        <span class="tag">mouse nav</span>
+        <span class="tag">4×4 – 10×10</span>
+        <span class="tag">truncation</span>
+      </div>
+    </div>
+  </a>
+
+  <!-- Walk Explorer -->
+  <a href="/ui" class="tool-card" style="--card-accent: #7c6eff">
+    <div class="card-preview preview-walk">
+      <div class="scan"></div>
+      <div class="img-mock"></div>
+      <div class="walk-controls">
+        <div class="wc-btn-sm"></div>
+        <div class="wc-btn">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg>
+        </div>
+        <div class="wc-btn-sm"></div>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="card-accent-line"></div>
+      <div class="card-title">Walk Explorer <span class="card-arrow">→</span></div>
+      <div class="card-desc">
+        Smooth random walk through latent space using spherical interpolation.
+        Pin positions, set seeds, record MP4 videos.
+      </div>
+      <div class="card-tags">
+        <span class="tag">slerp walk</span>
+        <span class="tag">seed jump</span>
+        <span class="tag">mp4 export</span>
+        <span class="tag">bookmark</span>
+      </div>
+    </div>
+  </a>
+
+
+  <!-- Infinite Map -->
+  <a href="/infinite" class="tool-card" style="--card-accent: #ff6e9c">
+    <div class="card-preview preview-infinite" id="inf-preview">
+    </div>
+    <div class="card-body">
+      <div class="card-accent-line"></div>
+      <div class="card-title">Infinite Latent Map <span class="card-arrow">→</span></div>
+      <div class="card-desc">
+        Drag to pan through an infinite 2D slice of latent space.
+        Tiles generate on demand. Adjust truncation to change diversity.
+      </div>
+      <div class="card-tags">
+        <span class="tag">drag & pan</span>
+        <span class="tag">infinite</span>
+        <span class="tag">on-demand</span>
+        <span class="tag">zoom</span>
+      </div>
+    </div>
+  </a>
+
+</div>
+
+<footer>
+  <div>
+    StyleGAN2 Latent Explorer · running on <span id="model-name">localhost:5000</span><br>
+    <span style="color:var(--muted); font-size:9px; letter-spacing:.06em">
+      Created by <a href="https://claude.ai/" style="color:var(--accent2); text-decoration:none">Claude</a> &amp; 
+      <a href="https://merzmensch.com/" style="color:var(--accent); text-decoration:none">Merzmensch</a> 
+      for the worldwide GenAI creative community
+    </span>
+  </div>
+  <div class="footer-links">
+    <a href="/ui">Walk Explorer</a>
+    <a href="/browser">Latent Browser</a>
+    <a href="/infinite">Infinite Map</a>
+  </div>
+</footer>
+
+<script>
+// ── Animated dot grid in hero ─────────────────────────────────
+const grid = document.getElementById('dot-grid');
+const colors = ['#7c6eff', '#00ffaa', '#ff6e9c', '#7c6eff', '#00d4ff'];
+for (let i = 0; i < 72; i++) {
+  const d = document.createElement('div');
+  d.className = 'dot-cell';
+  const col = colors[Math.floor(Math.random() * colors.length)];
+  d.style.cssText = `--dur:${(2.5 + Math.random()*3).toFixed(1)}s; --del:${(Math.random()*4).toFixed(1)}s; --col:${col}`;
+  grid.appendChild(d);
+}
+
+// ── Browser preview grid ──────────────────────────────────────
+const bp = document.getElementById('browser-preview');
+for (let i = 0; i < 15; i++) {
+  const d = document.createElement('div');
+  d.className = 'browser-cell' + (i === 7 ? ' browser-highlight' : '');
+  d.style.cssText = `--dur2:${(2+Math.random()*3).toFixed(1)}s; --del2:${(Math.random()*3).toFixed(1)}s`;
+  bp.appendChild(d);
+}
+
+// ── Infinite preview grid ─────────────────────────────────────
+const ip = document.getElementById('inf-preview');
+for (let i = 0; i < 24; i++) {
+  const d = document.createElement('div');
+  d.className = 'inf-cell' + (Math.random() > .5 ? ' bright' : '');
+  ip.appendChild(d);
+}
+
+// ── Status check ──────────────────────────────────────────────
+async function checkStatus() {
+  try {
+    const r = await fetch('http://localhost:5000/status');
+    const d = await r.json();
+    const dot  = document.getElementById('sdot');
+    const stxt = document.getElementById('stxt');
+    if (d.status === 'ok') {
+      dot.className = 'sdot live';
+      stxt.textContent = `ready · z=${d.z_dim} · ${d.resolution}px`;
+      const mn = document.getElementById('model-name');
+      if (d.pkl) mn.textContent = d.pkl.split(/[\\/]/).pop();
+    } else {
+      dot.className = 'sdot error';
+      stxt.textContent = 'no model loaded';
+    }
+  } catch(e) {
+    document.getElementById('sdot').className = 'sdot error';
+    document.getElementById('stxt').textContent = 'server not reachable';
+  }
+}
+checkStatus();
+</script>
+</body>
+</html>

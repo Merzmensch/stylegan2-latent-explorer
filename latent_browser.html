@@ -336,6 +336,22 @@
     z-index: 2;
   }
   .send-btn:hover { background: var(--accent); color: #000; }
+
+/* Hover tooltip */
+  .preview-tooltip {
+    position: absolute;
+    bottom: 8px; left: 8px; right: 8px;
+    background: rgba(0,0,0,0.85);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    padding: 7px 10px;
+    font-size: 9px;
+    color: var(--muted);
+    line-height: 1.6;
+    pointer-events: none;
+    z-index: 3;
+  }
+  .preview-tooltip b { color: var(--text); }
 </style>
 </head>
 <body>
@@ -345,7 +361,9 @@
   <div class="hrow">
     <div class="dot" id="dot"></div>
     <span id="stxt">not connected</span>
+    <a href="/" style="color:var(--muted);text-decoration:none;font-size:10px">⌂ Home</a>
     <a href="/ui" style="color:var(--muted);text-decoration:none;font-size:10px">→ Walk Explorer</a>
+    <a href="/infinite" style="color:var(--muted);text-decoration:none;font-size:10px">→ Infinite Map</a>
   </div>
 </header>
 
@@ -387,9 +405,14 @@
   <button class="send-btn" id="send-inf-btn" style="display:none; top:38px;" onclick="sendToInfinite()" title="Send this z to Infinite Map">
     → Infinite Map
   </button>
+  <div class="preview-tooltip">
+    <b>Instant click</b> — uses this thumbnail's exact z-vector<br>
+    <b>Hover 5 sec</b> — explores the surrounding latent space
+  </div>
   <div class="preview-badge" id="coord-badge" style="display:none">
     x: <span id="bx">0.00</span> &nbsp; y: <span id="by">0.00</span>
   </div>
+  <div class="preview-badge" id="seed-display" style="position:absolute;bottom:32px;left:8px;background:rgba(0,0,0,0.8);border:1px solid var(--border);border-radius:3px;padding:3px 8px;font-size:10px;color:var(--accent);display:block"></div>
 </div>
 
     <!-- Controls -->
@@ -498,8 +521,19 @@ const API = '';
 const cfg = { gridSize: 4, truncation: 0.8, nSamples: 512, debounce: 80 };
 let gridBuilt = false;
 let lastZ = null;
+let lastSeed = null;   // current seed number
+let currentModel = ''; // model name for filenames
 let probeTimer = null;
 let lastCell = -1;
+let cellHoverStart = null;
+let hoverExploreTimer = null;
+let previewPinned = false;
+
+function updateSeedDisplay(seed) {
+  lastSeed = seed;
+  const el = document.getElementById('seed-display');
+  if (el) el.textContent = seed !== null ? `seed: ${seed}` : '';
+}
 
 // ── API ───────────────────────────────────────────────────────
 async function api(path, method='GET', body=null) {
@@ -524,6 +558,7 @@ async function init() {
     if (s.status === 'ok') {
       setStatus('live', `ready · z=${s.z_dim} · ${s.resolution}px`);
       document.getElementById('build-btn').disabled = false;
+      if (s.pkl) currentModel = s.pkl.split(/[\\/]/).pop().replace('.pkl', '');
     } else {
       setStatus('error', 'no model loaded');
     }
@@ -653,6 +688,7 @@ const area = document.getElementById('canvas-area');
 
 area.addEventListener('mousemove', e => {
   if (!gridBuilt) return;
+  if (previewPinned) return;   // ← neu: nichts tun wenn Preview gepinnt
 
   const rect = area.getBoundingClientRect();
   const nx   = (e.clientX - rect.left)  / rect.width;
@@ -665,31 +701,72 @@ area.addEventListener('mousemove', e => {
   // Update coord badge
   document.getElementById('bx').textContent = nx.toFixed(3);
   document.getElementById('by').textContent = ny.toFixed(3);
-
-  // Highlight hovered grid cell
+// Highlight hovered grid cell
   const gs   = cfg.gridSize;
   const col  = Math.floor(nx * gs);
   const row  = Math.floor(ny * gs);
   const idx  = row * gs + col;
-  if (idx !== lastCell) {
+ if (idx !== lastCell) {
     document.querySelectorAll('.grid-cell').forEach(c => c.classList.remove('active'));
     const cell = document.querySelector(`.grid-cell[data-idx="${idx}"]`);
     if (cell) cell.classList.add('active');
     lastCell = idx;
+
+    // Sofort das Thumbnail als Preview zeigen wenn Zelle wechselt
+    const thumbImg = cell && cell.querySelector('img');
+    if (thumbImg && thumbImg.src) {
+      document.getElementById('preview-ph').style.display   = 'none';
+      document.getElementById('preview-img').style.display  = 'block';
+      document.getElementById('preview-img').src            = thumbImg.src;
+      document.getElementById('coord-badge').style.display  = 'block';
+      document.getElementById('send-btn').style.display     = 'block';
+      document.getElementById('send-inf-btn').style.display = 'block';
+
+      // z-Vektor des Thumbnails sofort setzen + Seed anzeigen
+      const gs2  = cfg.gridSize;
+      const col2 = Math.floor((e.clientX - area.getBoundingClientRect().left) / area.getBoundingClientRect().width * gs2);
+      const row2 = Math.floor((e.clientY - area.getBoundingClientRect().top)  / area.getBoundingClientRect().height * gs2);
+      api('/grid/get_z', 'POST', { row: row2, col: col2 }).then(z => {
+        if (z && z.z) {
+          lastZ = z.z;
+          // Seed aus Index berechnen
+          const seedNum = (row2 * gs2 + col2) * 1000 + gs2;
+          updateSeedDisplay(seedNum);
+        }
+      });
+
+// Timer für "hover explore" — nur einmal pro Zelle, 3 Sekunden
+      clearTimeout(hoverExploreTimer);
+      hoverExploreTimer = setTimeout(() => {
+        const nx2 = col2 / gs2 + 0.5 / gs2;
+        const ny2 = row2 / gs2 + 0.5 / gs2;
+        probe(nx2, ny2);
+      }, 3000);
+    }
   }
 
-  // Debounced full-res probe
-  clearTimeout(probeTimer);
+clearTimeout(probeTimer);
   probeTimer = setTimeout(() => probe(nx, ny), cfg.debounce);
 });
 
 area.addEventListener('mouseleave', () => {
   clearTimeout(probeTimer);
+  clearTimeout(hoverExploreTimer);
+  cellHoverStart = null;
   document.querySelectorAll('.grid-cell').forEach(c => c.classList.remove('active'));
   lastCell = -1;
 });
 
+area.addEventListener('dblclick', () => {
+  previewPinned = false;
+  lastCell = -1;
+  toast('🔓 Freigegeben — bewege die Maus wieder');
+});
+
+
 async function probe(nx, ny) {
+  if (previewPinned) return;
+
   const img = document.getElementById('preview-img');
   const ph  = document.getElementById('preview-ph');
 
@@ -699,9 +776,11 @@ async function probe(nx, ny) {
     nx, ny, truncation: cfg.truncation
   });
 
-  if (!r || r.error) return;
+  if (!r || r.error) { img.classList.remove('loading'); return; }
 
-  lastZ = r.z;
+  // probe() zeigt nur Vorschau — lastZ wird NICHT überschrieben
+  // lastZ wird nur vom Click-Handler (grid/get_z) gesetzt
+  if (r.seed !== undefined) updateSeedDisplay(r.seed);
   ph.style.display  = 'none';
   img.style.display = 'block';
   img.onload = () => img.classList.remove('loading');
@@ -719,16 +798,29 @@ area.addEventListener('click', async e => {
   const nx   = (e.clientX - rect.left) / rect.width;
   const ny   = (e.clientY - rect.top)  / rect.height;
 
-  // Nächstes Grid-Thumbnail — exakten z-Vektor holen
   const gs  = cfg.gridSize;
   const col = Math.floor(nx * gs);
   const row = Math.floor(ny * gs);
-  const z   = await api('/grid/get_z', 'POST', { row, col });
+  const idx = row * gs + col;
+
+  // Direkt das Thumbnail-Bild zeigen — sofort, kein API-Call
+  const cell = document.querySelector(`.grid-cell[data-idx="${idx}"]`);
+  const thumbImg = cell && cell.querySelector('img');
+  if (thumbImg && thumbImg.src) {
+    document.getElementById('preview-ph').style.display   = 'none';
+    document.getElementById('preview-img').style.display  = 'block';
+    document.getElementById('preview-img').src            = thumbImg.src;
+    document.getElementById('coord-badge').style.display  = 'block';
+    document.getElementById('send-btn').style.display     = 'block';
+    document.getElementById('send-inf-btn').style.display = 'block';
+  }
+
+  // z-Vektor des Thumbnails holen und pinnen
+  const z = await api('/grid/get_z', 'POST', { row, col });
   if (z && z.z) lastZ = z.z;
 
-  // Immediately probe at full res
-  await probe(nx, ny);
-  toast('📌 Position sampled — click → Walk Explorer to continue');
+  previewPinned = true;   // ← Preview einfrieren
+  toast('📌 Gepinnt — klick nochmal um freizugeben');
 });
 
 // ── Send to Walk Explorer ─────────────────────────────────────
@@ -757,7 +849,9 @@ function savePreview() {
   if (!img.src || img.style.display === 'none') { toast('Nothing to save'); return; }
   const a = document.createElement('a');
   a.href = img.src;
-  a.download = `latent_browser_${Date.now()}.jpg`;
+  const seed = lastSeed !== null ? lastSeed : Date.now();
+  const model = currentModel || 'latent';
+  a.download = `${model}_${seed}.png`;
   a.click();
 }
 

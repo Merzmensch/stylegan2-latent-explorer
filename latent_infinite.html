@@ -225,6 +225,7 @@
     <span id="stxt">connecting…</span>
   </div>
   <div class="nav-links">
+    <a href="/">⌂ Home</a>
     <a href="/browser">→ Browser</a>
     <a href="/ui">→ Walk Explorer</a>
   </div>
@@ -246,6 +247,7 @@
   <div class="preview-ph" id="preview-ph">Click a tile<br>for full preview</div>
   <img id="preview" style="display:none" alt="preview">
   <div class="preview-coords" id="preview-coords" style="display:none"></div>
+  <div id="seed-display" style="position:absolute;bottom:32px;left:6px;font-size:9px;color:#00ffaa;background:rgba(0,0,0,0.7);padding:2px 8px;border-radius:3px;font-family:'DM Mono',monospace;"></div>
   <button id="send-btn" onclick="sendToExplorer()" style="
     display:none;
     position:absolute;
@@ -296,7 +298,7 @@
           <label>Step size</label>
           <span class="v" id="sv">0.30</span>
         </div>
-        <input type="range" id="step-slider" min="0.05" max="2.0" step="0.05" value="0.3"
+        <input type="range" id="step-slider" min="0.1" max="5.0" step="0.1" value="1.0"
           oninput="document.getElementById('sv').textContent=parseFloat(this.value).toFixed(2); cfg.stepSize=+this.value; clearCache(); redraw()">
       </div>
       <p class="hint">Distance between adjacent tiles in latent space.</p>
@@ -346,7 +348,7 @@ const API = 'http://localhost:5000';
 // ── Config ────────────────────────────────────────────────────
 const cfg = {
   cellSize:   96,       // px per tile
-  stepSize:   0.3,      // latent space distance between tiles
+  stepSize:   1.0,      // latent space distance between tiles
   truncation: 0.7,
   padding:    2,        // extra tiles beyond viewport edge
   centerZ:    null,     // pinned center z-vector from Latent Browser
@@ -357,8 +359,17 @@ let offsetX = 0, offsetY = 0;   // pan offset in pixels
 let dragging = false, dragStartX, dragStartY, dragOffX, dragOffY;
 let tileCache = {};              // key "gx,gy" → {img, z}
 let pendingTiles = new Set();    // tiles currently being fetched
+let fetchGeneration = 0;         // increments on pan — cancels stale requests
 let selectedTile = null;
 let selectedZ = null;
+let selectedSeed = null;
+let currentModel = '';   // model name for filenames
+
+function updateSeedDisplay(seed) {
+  selectedSeed = seed;
+  const el = document.getElementById('seed-display');
+  if (el) el.textContent = seed !== null ? `seed: ${seed}` : '';
+}
 let truncation = 0.7;
 let animFrame = null;
 let connected = false;
@@ -380,12 +391,16 @@ async function init() {
   if (s && s.status === 'ok') {
     connected = true;
     setStatus('live', `ready · z=${s.z_dim} · ${s.resolution}px`);
+    if (s.pkl) currentModel = s.pkl.split(/[\\/]/).pop().replace('.pkl', '');
 
-    // Check if a center point was sent from Latent Browser
+    // Check if a center point was sent from Latent Browser — read once then clear
     const c = await api('/infinite/center');
     if (c && c.center) {
       cfg.centerZ = c.center;
+      clearCache();  // ← leere Cache damit neue Tiles vom Mittelpunkt generiert werden
       toast('📌 Centered on pinned position from Latent Browser');
+      // Clear the center on server so next open starts fresh
+      await api('/infinite/center/clear', 'POST');
     }
 
     redraw();
@@ -435,6 +450,8 @@ async function fetchTile(gx, gy) {
   if (tileCache[key] || pendingTiles.has(key)) return;
   pendingTiles.add(key);
 
+  const myGeneration = fetchGeneration;   // snapshot — if this changes, discard result
+
   const { lx, ly } = cellToLatent(gx, gy);
   const r = await api('/infinite/tile', 'POST', {
     lx, ly, truncation: cfg.truncation,
@@ -442,6 +459,10 @@ async function fetchTile(gx, gy) {
   });
 
   pendingTiles.delete(key);
+
+  // User panned away while this was loading — discard
+  if (myGeneration !== fetchGeneration) return;
+
   if (!r || r.error) return;
 
   tileCache[key] = { b64: r.image, z: r.z };
@@ -484,9 +505,15 @@ function redraw() {
     if (!needed.has(el.dataset.key)) el.remove();
   });
 
-  // Add new tiles
-  needed.forEach(key => {
+  // Add new tiles — sorted by distance from center (inside-out loading)
+  const neededArray = Array.from(needed).map(key => {
     const [gx, gy] = key.split(',').map(Number);
+    const dist = Math.sqrt((gx - centerGX) ** 2 + (gy - centerGY) ** 2);
+    return { key, gx, gy, dist };
+  });
+  neededArray.sort((a, b) => a.dist - b.dist);
+
+  neededArray.forEach(({ key, gx, gy }) => {
     const pos = cellToScreen(gx, gy);
 
     let el = document.getElementById('tile-' + key.replace(',', '_'));
@@ -554,6 +581,9 @@ function onTileClick(gx, gy, key) {
 
 function showPreview(b64, z, gx, gy) {
   selectedZ = z;
+  // Generate deterministic seed from grid position
+  selectedSeed = Math.abs(gx * 1000 + gy * 7 + Math.round(offsetX) * 3) % 999999;
+  updateSeedDisplay(selectedSeed);
   const img = document.getElementById('preview');
   const ph  = document.getElementById('preview-ph');
   ph.style.display = 'none';
@@ -581,6 +611,8 @@ window.addEventListener('mousemove', e => {
   if (!dragging) return;
   offsetX = dragOffX + (e.clientX - dragStartX);
   offsetY = dragOffY + (e.clientY - dragStartY);
+  fetchGeneration++;    // invalidate all pending fetches
+  pendingTiles.clear(); // allow tiles to be re-requested at new position
   redraw();
 });
 
@@ -645,7 +677,9 @@ function savePreview() {
   if (!img.src || img.style.display === 'none') { toast('Click a tile first'); return; }
   const a = document.createElement('a');
   a.href = img.src;
-  a.download = `latent_map_${Date.now()}.jpg`;
+  const seed = selectedSeed !== null ? selectedSeed : Date.now();
+  const model = currentModel || 'latent';
+  a.download = `${model}_${seed}.png`;
   a.click();
 }
 

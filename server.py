@@ -1,18 +1,19 @@
 """
 StyleGAN2 Latent Space Server
 ==============================
-Serves both the Walk Explorer (/ui) and the 2D Vector Browser (/browser).
+Serves Walk Explorer (/ui), Latent Browser (/browser), Infinite Map (/infinite).
 
 Usage:
-    cd stylegan2-ada-pytorch
     python server.py --pkl path/to/your_model.pkl
 
 Then open:
+    http://localhost:5000           ← Landing page
+    http://localhost:5000/browser   ← 2D Latent Browser
     http://localhost:5000/ui        ← Walk Explorer
-    http://localhost:5000/browser   ← 2D Latent Space Browser
+    http://localhost:5000/infinite  ← Infinite Latent Map
 """
 
-import argparse, os, sys, glob, io, base64, json
+import argparse, os, sys, glob, io, base64
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'stylegan2-ada-pytorch'))
 import numpy as np
@@ -22,7 +23,8 @@ from flask import Flask, jsonify, request, Response, send_from_directory
 from flask_cors import CORS
 import threading
 import legacy
-_recording = False
+
+_recording     = False
 _record_frames = []
 
 # ── Args ──────────────────────────────────────────────────────────────────────
@@ -52,9 +54,9 @@ def load_model(path):
     Z_DIM    = G.z_dim
     RES      = G.img_resolution
     PKL_PATH = path
-    # Reset all state
     _reset_walk()
     _grid_cache.clear()
+    _tile_cache.clear()
     print(f'[server] ✅ z_dim={Z_DIM}  resolution={RES}')
 
 # ── Image generation ──────────────────────────────────────────────────────────
@@ -78,6 +80,10 @@ def pil_to_b64(pil, quality=85):
 
 def z_to_b64(z_vector, truncation_psi=0.7, size=None):
     return pil_to_b64(z_to_pil(z_vector, truncation_psi, size))
+
+def z_to_seed(z):
+    """Deterministic seed number from a z vector."""
+    return int(abs(hash(np.array(z).tobytes())) % 999999)
 
 def slerp(z1, z2, t):
     z1n = z1 / (np.linalg.norm(z1) + 1e-8)
@@ -105,12 +111,11 @@ def _reset_walk():
         'pinned_z':   None,
     }
 
-# ── PCA Grid ──────────────────────────────────────────────────────────────────
-# We sample N random z vectors, project them onto 2 PCA axes,
-# then lay them out in a grid. The mouse position maps to a
-# continuous coordinate in this 2D PCA space.
+# ── Pending z — one-shot Browser → Explorer handoff ──────────────────────────
+_pending_z = None
 
-_grid_cache = {}   # stores the precomputed grid data
+# ── PCA Grid ──────────────────────────────────────────────────────────────────
+_grid_cache = {}
 
 def build_pca_grid(n_samples=512, grid_size=None, thumb_res=None, truncation=0.7):
     """
@@ -126,32 +131,27 @@ def build_pca_grid(n_samples=512, grid_size=None, thumb_res=None, truncation=0.7
     # PCA — manual 2-component via SVD (no sklearn needed)
     zs_centered = zs - zs.mean(axis=0)
     _, _, Vt = np.linalg.svd(zs_centered, full_matrices=False)
-    pc1 = Vt[0]   # first principal component
-    pc2 = Vt[1]   # second principal component
+    pc1 = Vt[0]
+    pc2 = Vt[1]
 
     # Project all samples onto PC1/PC2
-    coords = zs_centered @ np.stack([pc1, pc2], axis=1)   # [N, 2]
+    coords = zs_centered @ np.stack([pc1, pc2], axis=1)
     x_min, x_max = coords[:, 0].min(), coords[:, 0].max()
     y_min, y_max = coords[:, 1].min(), coords[:, 1].max()
 
-    # Build grid: for each grid cell, find the z closest to that PCA coordinate
+    # Build grid: for each cell, find the z closest to that PCA coordinate
     print(f'[PCA] Building {grid_size}x{grid_size} grid...')
     grid_zs   = []
     grid_imgs = []
 
     for row in range(grid_size):
         for col in range(grid_size):
-            # Target PCA coordinate for this cell
             tx = x_min + (col + 0.5) / grid_size * (x_max - x_min)
             ty = y_min + (row + 0.5) / grid_size * (y_max - y_min)
-
-            # Find closest sampled z
             dists = np.sum((coords - np.array([tx, ty])) ** 2, axis=1)
             idx   = np.argmin(dists)
             z     = zs[idx]
             grid_zs.append(z.tolist())
-
-            # Generate thumbnail
             img_b64 = z_to_b64(z, truncation, size=thumb_res)
             grid_imgs.append(img_b64)
             print(f'[PCA] Generated {row*grid_size+col+1}/{grid_size*grid_size}', end='\r')
@@ -177,7 +177,8 @@ def build_pca_grid(n_samples=512, grid_size=None, thumb_res=None, truncation=0.7
 def z_from_pca_coord(nx, ny, truncation=0.7):
     """
     Given normalized mouse position (nx, ny) in [0,1],
-    reconstruct a z vector in PCA space and generate an image.
+    reconstruct a z vector in PCA space.
+    NOTE: This is an approximation — use grid/get_z for exact thumbnail z.
     """
     d = _grid_cache.get('data')
     if d is None:
@@ -189,14 +190,15 @@ def z_from_pca_coord(nx, ny, truncation=0.7):
     x_min, x_max = d['x_min'], d['x_max']
     y_min, y_max = d['y_min'], d['y_max']
 
-    # Map [0,1] → PCA coordinate range
     px = x_min + nx * (x_max - x_min)
     py = y_min + ny * (y_max - y_min)
 
-    # Reconstruct z from PCA coords
     z = z_mean + px * pc1 + py * pc2
     return z
 
+
+# ── Infinite map tile cache ───────────────────────────────────────────────────
+_tile_cache = {}
 
 # ── Flask ─────────────────────────────────────────────────────────────────────
 app = Flask(__name__, static_folder='.')
@@ -287,7 +289,7 @@ def set_seed():
     if G is None: return jsonify({'error': 'no model'}), 400
     seed = int((request.json or {}).get('seed', 0))
     rng  = np.random.RandomState(seed)
-    z = rng.randn(Z_DIM)
+    z    = rng.randn(Z_DIM)
     _walk['z']        = z.copy()
     _walk['z_start']  = z.copy()
     _walk['z_target'] = np.random.randn(Z_DIM)
@@ -302,22 +304,38 @@ def set_truncation():
     return jsonify({'image': z_to_b64(_walk['z'], _walk['truncation'])})
 
 
+# ── Pending z — one-shot Browser → Explorer handoff ──────────────────────────
+
+@app.route('/pending_z')
+def get_pending_z():
+    """
+    Returns the z vector sent from Browser to Explorer.
+    Clears itself after the first read — one-shot delivery.
+    """
+    global _pending_z
+    if _pending_z is None:
+        return jsonify({'image': None})
+    z          = _pending_z
+    _pending_z = None   # clear after reading
+    img  = z_to_b64(z, _walk.get('truncation', 0.7))
+    seed = z_to_seed(z)
+    return jsonify({'image': img, 'seed': seed})
+
+
 # ── PCA Grid endpoints ────────────────────────────────────────────────────────
 
 @app.route('/grid/build', methods=['POST'])
 def grid_build():
-    """Build (or rebuild) the PCA grid. Can take 30–120s depending on grid size."""
+    """Build (or rebuild) the PCA grid."""
     if G is None: return jsonify({'error': 'no model'}), 400
-    data      = request.json or {}
-    n_samples = int(data.get('n_samples', 512))
-    grid_size = int(data.get('grid_size', args.grid))
-    thumb_res = int(data.get('thumb_res', args.res))
+    data       = request.json or {}
+    n_samples  = int(data.get('n_samples', 512))
+    grid_size  = int(data.get('grid_size', args.grid))
+    thumb_res  = int(data.get('thumb_res', args.res))
     truncation = float(data.get('truncation', 0.7))
 
-    # Run in current thread (caller should be patient)
     result = build_pca_grid(n_samples, grid_size, thumb_res, truncation)
 
-    # Return everything except the z vectors (too large)
     return jsonify({
         'status':    'ok',
         'grid_size': result['grid_size'],
@@ -329,8 +347,9 @@ def grid_build():
 @app.route('/grid/probe', methods=['POST'])
 def grid_probe():
     """
-    Given normalized mouse position (nx, ny in [0,1]),
-    generate a full-res image at that PCA coordinate.
+    Generate a preview image at a PCA coordinate (mouse position).
+    Returns PCA-reconstructed z — for preview only, not for pinning.
+    Use /grid/get_z for the exact thumbnail z vector.
     """
     if G is None: return jsonify({'error': 'no model'}), 400
     data       = request.json or {}
@@ -342,37 +361,69 @@ def grid_probe():
     if z is None:
         return jsonify({'error': 'grid not built yet'}), 400
 
-    img = z_to_b64(z, truncation, size=512)
-    return jsonify({'image': img, 'z': z.tolist()})
+    img  = z_to_b64(z, truncation, size=512)
+    seed = z_to_seed(z)
+    return jsonify({'image': img, 'z': z.tolist(), 'seed': seed})
+
+
+@app.route('/grid/get_z', methods=['POST'])
+def grid_get_z():
+    """Return the exact z vector of a grid thumbnail by row/col index."""
+    data = request.json or {}
+    row  = int(data.get('row', 0))
+    col  = int(data.get('col', 0))
+    d    = _grid_cache.get('data')
+    if d is None:
+        return jsonify({'error': 'grid not built'}), 400
+    gs  = d['grid_size']
+    idx = row * gs + col
+    if idx >= len(d['grid_zs']):
+        return jsonify({'error': 'out of range'}), 400
+    z    = np.array(d['grid_zs'][idx])
+    seed = z_to_seed(z)
+    return jsonify({'z': d['grid_zs'][idx], 'seed': seed})
 
 
 @app.route('/grid/pin_probe', methods=['POST'])
 def grid_pin_probe():
-    """Pin the last probed z so we can recall it in the walk explorer."""
+    """
+    Pin a z vector from the Browser.
+    Sets _pending_z so Walk Explorer gets the exact same image on open.
+    """
+    global _pending_z
     data = request.json or {}
     z    = data.get('z')
     if z is None:
         return jsonify({'error': 'no z provided'}), 400
-    _walk['z']        = np.array(z)
+    za = np.array(z)
+    _walk['z']        = za.copy()
+    _walk['z_start']  = za.copy()
     _walk['z_target'] = np.random.randn(Z_DIM)
     _walk['t']        = 0.0
-    _walk['pinned_z'] = np.array(z)
+    _walk['pinned_z'] = za.copy()
+    _pending_z        = za.copy()   # one-shot for Explorer init
     return jsonify({'status': 'ok'})
 
 
 @app.route('/grid/pin_infinite', methods=['POST'])
 def grid_pin_infinite():
-    """Pin a z vector as the center point for the Infinite Map."""
+    """
+    Pin a z vector as the center point for the Infinite Map.
+    Clears tile cache so new tiles are generated from this center.
+    """
+    global _tile_cache
     data = request.json or {}
     z    = data.get('z')
     if z is None:
         return jsonify({'error': 'no z provided'}), 400
-    _walk['z']               = np.array(z)
-    _walk['z_start']         = np.array(z)
+    za = np.array(z)
+    _walk['z']               = za.copy()
+    _walk['z_start']         = za.copy()
     _walk['z_target']        = np.random.randn(Z_DIM)
     _walk['t']               = 0.0
-    _walk['pinned_z']        = np.array(z)
-    _walk['infinite_center'] = np.array(z)
+    _walk['pinned_z']        = za.copy()
+    _walk['infinite_center'] = za.copy()
+    _tile_cache = {}   # clear so new tiles use this center
     return jsonify({'status': 'ok'})
 
 
@@ -385,29 +436,72 @@ def infinite_center():
     return jsonify({'center': center.tolist()})
 
 
-# ── Serve HTML files ──────────────────────────────────────────────────────────
+@app.route('/infinite/center/clear', methods=['POST'])
+def infinite_center_clear():
+    """Clear the infinite center after it has been read by the client."""
+    _walk.pop('infinite_center', None)
+    return jsonify({'status': 'ok'})
 
-@app.route('/ui')
-def serve_explorer():
-    return send_from_directory(SCRIPT_DIR, 'latent_explorer.html')
 
-@app.route('/browser')
-def serve_browser():
-    return send_from_directory(SCRIPT_DIR, 'latent_browser.html')
+# ── Infinite map tiles ────────────────────────────────────────────────────────
 
-@app.route('/')
-def index():
-    return send_from_directory(SCRIPT_DIR, 'index.html')
+@app.route('/infinite/tile', methods=['POST'])
+def infinite_tile():
+    """
+    Generate one tile for the infinite map.
+    lx, ly = 2D latent space coordinates.
+    Uses two fixed orthogonal basis vectors to map 2D → 512D z vector.
+    If center_z is provided, offsets from that point instead of origin.
+    """
+    if G is None: return jsonify({'error': 'no model'}), 400
+    data     = request.json or {}
+    lx       = float(data.get('lx', 0))
+    ly       = float(data.get('ly', 0))
+    trunc    = float(data.get('truncation', 0.7))
+    center_z = data.get('center_z', None)
 
-if args.pkl:
-    load_model(args.pkl)
+    # Cache key includes center_z hash so different centers don't collide
+    center_key = hash(tuple(center_z[:8])) if center_z else 0
+    cache_key  = f'{lx:.3f}_{ly:.3f}_{trunc:.2f}_{center_key}'
+    if cache_key in _tile_cache:
+        return jsonify(_tile_cache[cache_key])
+
+    # Fixed basis vectors — seeded so always the same across sessions
+    rng     = np.random.RandomState(42)
+    basis_x = rng.randn(Z_DIM).astype(np.float32)
+    basis_y = rng.randn(Z_DIM).astype(np.float32)
+
+    # Orthogonalize y against x (Gram-Schmidt)
+    basis_x = basis_x / (np.linalg.norm(basis_x) + 1e-8)
+    basis_y = basis_y - np.dot(basis_y, basis_x) * basis_x
+    basis_y = basis_y / (np.linalg.norm(basis_y) + 1e-8)
+
+    # Scale factor — spreads tiles further apart in latent space
+    # StyleGAN2 z vectors typically have norm ~sqrt(Z_DIM) ≈ 22 for 512-dim
+    scale = np.sqrt(Z_DIM) * 0.15
+
+    # Reconstruct z — offset from center if provided, otherwise from origin
+    if center_z is not None:
+        cz = np.array(center_z, dtype=np.float32)
+        z  = cz + basis_x * lx * scale + basis_y * ly * scale
+    else:
+        z = basis_x * lx * scale + basis_y * ly * scale
+
+    img    = z_to_b64(z, trunc, size=128)
+    result = {'image': img, 'z': z.tolist()}
+    _tile_cache[cache_key] = result
+    return jsonify(result)
+
+
+# ── Recording ─────────────────────────────────────────────────────────────────
 
 @app.route('/record/start', methods=['POST'])
 def record_start():
     global _recording, _record_frames
-    _recording = True
+    _recording     = True
     _record_frames = []
     return jsonify({'status': 'recording'})
+
 
 @app.route('/record/stop', methods=['POST'])
 def record_stop():
@@ -416,17 +510,14 @@ def record_stop():
     if not _record_frames:
         return jsonify({'error': 'no frames'}), 400
 
-    import subprocess, tempfile, os
-    from PIL import Image
+    import subprocess, tempfile
 
-    # Save frames as temp PNGs
     tmpdir = tempfile.mkdtemp()
     for i, frame_b64 in enumerate(_record_frames):
         img_data = base64.b64decode(frame_b64)
-        img = Image.open(io.BytesIO(img_data))
+        img      = Image.open(io.BytesIO(img_data))
         img.save(os.path.join(tmpdir, f'frame_{i:05d}.png'))
 
-    # Run ffmpeg
     output_path = os.path.join(SCRIPT_DIR, f'output_{int(torch.randint(0,9999,(1,)).item())}.mp4')
     subprocess.run([
         r'C:\ffmpeg\ffmpeg-8.0-essentials_build\bin\ffmpeg.exe', '-y',
@@ -440,58 +531,30 @@ def record_stop():
     _record_frames = []
     return jsonify({'status': 'saved', 'path': output_path})
 
-# ── Infinite map endpoint ─────────────────────────────────────
 
-# Cache für generierte Tiles — Key: "lx_ly_trunc"
-_tile_cache = {}
+# ── Serve HTML files ──────────────────────────────────────────────────────────
 
-@app.route('/infinite/tile', methods=['POST'])
-def infinite_tile():
-    """
-    Generate one tile for the infinite map.
-    lx, ly = 2D latent space coordinates
-    Uses two fixed PCA-like basis vectors to map 2D → 512D z vector.
-    If center_z is provided, offsets from that point instead of origin.
-    """
-    if G is None: return jsonify({'error': 'no model'}), 400
-    data      = request.json or {}
-    lx        = float(data.get('lx', 0))
-    ly        = float(data.get('ly', 0))
-    trunc     = float(data.get('truncation', 0.7))
-    center_z  = data.get('center_z', None)
+@app.route('/')
+def index():
+    return send_from_directory(SCRIPT_DIR, 'index.html')
 
-    # Cache key
-    cache_key = f'{lx:.3f}_{ly:.3f}_{trunc:.2f}'
-    if cache_key in _tile_cache:
-        return jsonify(_tile_cache[cache_key])
+@app.route('/ui')
+def serve_explorer():
+    return send_from_directory(SCRIPT_DIR, 'latent_explorer.html')
 
-    # Use two fixed basis vectors derived from the model's z_dim
-    # Seeded so they're always the same across sessions
-    rng     = np.random.RandomState(42)
-    basis_x = rng.randn(Z_DIM).astype(np.float32)
-    basis_y = rng.randn(Z_DIM).astype(np.float32)
-
-    # Orthogonalize y against x (Gram-Schmidt)
-    basis_x = basis_x / (np.linalg.norm(basis_x) + 1e-8)
-    basis_y = basis_y - np.dot(basis_y, basis_x) * basis_x
-    basis_y = basis_y / (np.linalg.norm(basis_y) + 1e-8)
-
-    # Reconstruct z from 2D coordinates
-    # If a center z is provided, offset from it — otherwise start from origin
-    if center_z is not None:
-        cz = np.array(center_z, dtype=np.float32)
-        z  = cz + basis_x * lx + basis_y * ly
-    else:
-        z = basis_x * lx + basis_y * ly
-
-    img    = z_to_b64(z, trunc, size=128)
-    result = {'image': img, 'z': z.tolist()}
-    _tile_cache[cache_key] = result
-    return jsonify(result)
+@app.route('/browser')
+def serve_browser():
+    return send_from_directory(SCRIPT_DIR, 'latent_browser.html')
 
 @app.route('/infinite')
 def serve_infinite():
     return send_from_directory(SCRIPT_DIR, 'latent_infinite.html')
+
+
+# ── Start ─────────────────────────────────────────────────────────────────────
+
+if args.pkl:
+    load_model(args.pkl)
 
 if __name__ == '__main__':
     print(f'\n✅  Open http://localhost:{args.port} in your browser\n')

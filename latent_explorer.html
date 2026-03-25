@@ -188,7 +188,9 @@
   <div class="hstatus">
     <div class="dot" id="dot"></div>
     <span id="stxt">connecting…</span>
-    <a href="http://localhost:5000/browser" style="color:var(--muted);text-decoration:none;font-size:10px">→ Latent Browser</a>
+    <a href="/" style="color:var(--muted);text-decoration:none;font-size:10px">⌂ Home</a>
+    <a href="/browser" style="color:var(--muted);text-decoration:none;font-size:10px">→ Latent Browser</a>
+    <a href="/infinite" style="color:var(--muted);text-decoration:none;font-size:10px">→ Infinite Map</a>
   </div>
 </header>
 
@@ -265,6 +267,7 @@
       <img id="canvas" style="display:none" alt="Generated">
       <div class="img-overlay">
         <span class="badge" id="fcnt">frame 0</span>
+        <span class="badge" id="seed-badge" style="color:var(--accent)"></span>
         <span class="badge walk-badge off" id="wind">■ paused</span>
       </div>
       <div class="progress" id="prog" style="width:0%"></div>
@@ -311,6 +314,14 @@
 <script>
 const API = 'http://localhost:5000';
 let walking = false, timer = null, frame = 0, walkT = 0, pinned = false;
+let currentSeed = null;
+let currentModel = '';   // model name for filenames
+
+function updateSeedDisplay(seed) {
+  currentSeed = seed;
+  const el = document.getElementById('seed-badge');
+  if (el) el.textContent = seed !== null ? `seed: ${seed}` : '';
+}
 const cfg = { step: 0.05, fps: 6 };
 let hist = [];
 
@@ -331,7 +342,7 @@ function setStatus(s, msg) {
 function enable(on) {
   ['playbtn','stepbtn','jmpbtn'].forEach(id => document.getElementById(id).disabled = !on);
 }
-function showImg(b64) {
+function showImg(b64, seed) {
   const img = document.getElementById('canvas');
   document.getElementById('ph').style.display = 'none';
   img.style.display = 'block';
@@ -342,6 +353,7 @@ function showImg(b64) {
   frame++;
   document.getElementById('fcnt').textContent = 'frame ' + frame;
   document.getElementById('prog').style.width = (walkT * 100) + '%';
+  if (seed !== undefined && seed !== null) updateSeedDisplay(seed);
 }
 
 async function init() {
@@ -349,10 +361,12 @@ async function init() {
   if (s && s.status === 'ok') {
     setStatus('live', `ready · z=${s.z_dim} · ${s.resolution}px`);
     enable(true);
-    // Vom Browser gepinnten z laden — sonst random
-    const pinned = await api('/recall', 'POST');
-    if (pinned && pinned.image) {
-      showImg(pinned.image);
+    if (s.pkl) currentModel = s.pkl.split(/[\\/]/).pop().replace('.pkl', '');
+    // Vom Browser gepinnten z laden — einmalig, dann zurücksetzen
+    const pending = await api('/pending_z', 'GET');
+    if (pending && pending.image) {
+      showImg(pending.image);
+      if (pending.seed !== undefined) updateSeedDisplay(pending.seed);
       toast('📌 Position vom Latent Browser geladen');
     } else {
       const r = await api('/random', 'POST');
@@ -403,7 +417,7 @@ async function goSeed() {
   const s = parseInt(document.getElementById('seed').value);
   if (isNaN(s)) { toast('Enter a seed number'); return; }
   const r = await api('/set_seed', 'POST', { seed: s });
-  if (r) showImg(r.image);
+  if (r) { updateSeedDisplay(s); showImg(r.image, s); }
 }
 function rndSeed() {
   document.getElementById('seed').value = Math.floor(Math.random()*100000);
@@ -436,11 +450,19 @@ function clearHist() { hist = []; document.getElementById('hgrid').innerHTML = '
 function saveCurrent() {
   const img = document.getElementById('canvas');
   if (!img.src || img.style.display==='none') { toast('No image yet'); return; }
-  dlImg(img.src, frame);
+  const a = document.createElement('a');
+  a.href = img.src;
+  const seed = currentSeed !== null ? currentSeed : String(frame).padStart(4,'0');
+  const model = currentModel || 'latent';
+  a.download = `${model}_${seed}.png`;
+  a.click();
 }
 function dlImg(src, n) {
   const a = document.createElement('a');
-  a.href = src; a.download = `latent_${String(n).padStart(4,'0')}.png`; a.click();
+  a.href = src;
+  const model = currentModel || 'latent';
+  a.download = `${model}_${n}.png`;
+  a.click();
 }
 let _tt;
 function toast(msg) {
